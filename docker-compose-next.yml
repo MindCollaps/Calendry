@@ -1,7 +1,7 @@
 services:
-  xxx-changemeapp:
-    image: ghcr.io/mindcollaps/xxx-changeme:next
-    container_name: xxx-changemeapp
+  calendry-app:
+    image: ghcr.io/mindcollaps/calendry:next
+    container_name: calendry-app
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -23,9 +23,10 @@ services:
       retries: 10
   db:
     image: 'postgres:18.1-alpine'
-    container_name: xxx-changemedb
+    container_name: calendry-db
     volumes:
       - db_data:/var/lib/postgresql/18/docker
+      - ./.config/db-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test:
         - CMD-SHELL

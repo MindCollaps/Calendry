@@ -1,3 +1,19 @@
+// Calendry — multi-tenant calendar/timetabling platform.
+//
+// This file is the FIXED CORE TAXONOMY (TAXONOMY.md §1): entity types and their
+// relationships. Changing anything here is a migration, not a config change.
+//
+// Tenant-configurable VOCABULARY lives in rows, not in this schema: Role,
+// Equipment, SessionKind and Constraint parameters are all data. Adding a role
+// or a session kind must never require touching this file.
+//
+// Things this schema CANNOT express, which live in the hand-written companion
+// migration instead (see prisma/migrations/*_rls_triggers_and_indexes):
+//   - row-level security policies (tenant isolation, TAXONOMY.md §2)
+//   - the group_closure maintenance trigger (TAXONOMY.md §6)
+//   - append-only enforcement on generation / session_event (TAXONOMY.md §3)
+//   - partial indexes (the solver's `WHERE is_locked = false` exclusion path)
+
 datasource db {
   provider = "postgres"
 }
@@ -6,3 +22,944 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// ---------------------------------------------------------------------------
+// Enums — structural, therefore fixed. Anything tenant-extensible is a table.
+// ---------------------------------------------------------------------------
+
+/// Kinds of academic-calendar period. Structural (TAXONOMY.md §2 names these
+/// explicitly as core from day one), so an enum rather than tenant vocabulary.
+enum CalendarPeriodKind {
+  HOLIDAY
+  BREAK
+  EXAM
+
+  @@map("calendar_period_kind")
+}
+
+/// Which owner a Generation came from.
+enum GenerationSource {
+  SOLVER
+  MANUAL_BASELINE
+  IMPORT
+
+  @@map("generation_source")
+}
+
+enum GenerationStatus {
+  PENDING
+  RUNNING
+  READY
+  APPLIED
+  FAILED
+  SUPERSEDED
+  INFEASIBLE
+
+  @@map("generation_status")
+}
+
+/// Append-only event log vocabulary (TAXONOMY.md §3).
+enum SessionEventType {
+  CREATE
+  MOVE
+  SWAP
+  DELETE
+  LOCK
+  UNLOCK
+
+  @@map("session_event_type")
+}
+
+/// Hard constraints are inviolable for the solver but only *flagged* on manual
+/// edit (warn-and-allow, TAXONOMY.md §3). Soft constraints carry a penalty.
+enum ConstraintSeverity {
+  HARD
+  SOFT
+
+  @@map("constraint_severity")
+}
+
+// ---------------------------------------------------------------------------
+// Organizational hierarchy
+// ---------------------------------------------------------------------------
+
+/// Optional parent grouping of Tenants that share resources. Owns resources
+/// member tenants may reference — the deliberate, narrow exception to tenant
+/// isolation. NOT tenant-scoped (it is above the tenant).
+model Federation {
+  id        String   @id @default(uuid(7))
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenants   Tenant[]
+  rooms     Room[]
+  equipment Equipment[]
+  offerings Offering[]
+
+  @@map("federation")
+}
+
+/// A single institution. THE isolation boundary — every tenant-scoped table
+/// carries tenant_id and is filtered by row-level security, not app code.
+model Tenant {
+  id           String  @id @default(uuid(7))
+  federationId String? @map("federation_id")
+  slug         String  @unique
+  name         String
+
+  /// Institution-local timezone. All grid and solver logic runs in this zone;
+  /// Person.timezone is presentation-only and must never reach constraint
+  /// evaluation (TAXONOMY.md §2, §8).
+  timezone String @default("UTC")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  federation Federation? @relation(fields: [federationId], references: [id], onDelete: Restrict)
+
+  people               Person[]
+  roles                Role[]
+  groups               Group[]
+  memberships          Membership[]
+  personRoles          PersonRole[]
+  rooms                Room[]
+  equipment            Equipment[]
+  roomEquipment        RoomEquipment[]
+  timeGrids            TimeGrid[]
+  terms                Term[]
+  calendarPeriods      CalendarPeriod[]
+  sessionKinds         SessionKind[]
+  offerings            Offering[]
+  offeringGroups       OfferingGroup[]
+  offeringLecturers    OfferingLecturer[]
+  offeringEquipment    OfferingEquipment[]
+  sessions             Session[]
+  sessionGroups        SessionGroup[]
+  sessionPeople        SessionPerson[]
+  sessionRooms         SessionRoom[]
+  constraints          Constraint[]
+  constraintScopes     ConstraintScope[]
+  generations          Generation[]
+  sessionEvents        SessionEvent[]
+  constraintViolations ConstraintViolation[]
+  groupClosures        GroupClosure[]
+
+  @@index([federationId])
+  @@map("tenant")
+}
+
+// ---------------------------------------------------------------------------
+// People & roles
+// ---------------------------------------------------------------------------
+
+/// The ONLY person entity (TAXONOMY.md §2). No Student/Lecturer/Staff tables —
+/// what someone *is* comes from PersonRole, which is tenant vocabulary.
+model Person {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  /// Stable id from an external SIS/LDAP, for import reconciliation (§8).
+  externalRef String? @map("external_ref")
+
+  givenName  String  @map("given_name")
+  familyName String  @map("family_name")
+  email      String?
+
+  /// Display/export only (TAXONOMY.md §8). Never used in scheduling logic.
+  timezone String?
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  personRoles       PersonRole[]
+  memberships       Membership[]
+  sessionPeople     SessionPerson[]
+  offeringLecturers OfferingLecturer[]
+  generations       Generation[]
+  sessionEvents     SessionEvent[]
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, externalRef])
+  @@index([tenantId])
+  @@map("person")
+}
+
+/// Tenant-defined vocabulary. `lecturer` is the one universal key (the person
+/// who leads a Session) and is marked is_system so tenants cannot delete it;
+/// everything else — student, auditor, TA, external — is theirs to define.
+model Role {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  key         String
+  name        String
+  description String?
+
+  /// True only for the fixed `lecturer` key. Provisioning creates it per
+  /// tenant; it is required vocabulary, not seed data.
+  isSystem Boolean @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  personRoles       PersonRole[]
+  sessionPeople     SessionPerson[]
+  offerings         Offering[]
+  offeringLecturers OfferingLecturer[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("role")
+}
+
+/// Person ↔ Role.
+model PersonRole {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+  personId String @map("person_id")
+  roleId   String @map("role_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([personId, roleId])
+  @@index([tenantId])
+  @@index([roleId])
+  @@map("person_role")
+}
+
+// ---------------------------------------------------------------------------
+// Grouping — nested (TAXONOMY.md §2, §6)
+// ---------------------------------------------------------------------------
+
+/// A class, cohort, seminar group. Self-referential: Cohort → Class → Seminar.
+/// Conflict propagation runs BOTH directions (a busy parent blocks its
+/// children and vice versa), so availability checks read GroupClosure rather
+/// than walking this tree.
+model Group {
+  id            String  @id @default(uuid(7))
+  tenantId      String  @map("tenant_id")
+  parentGroupId String? @map("parent_group_id")
+
+  name        String
+  description String?
+
+  /// Denormalized headcount hint for room-capacity checks. Advisory only —
+  /// Membership is the source of truth.
+  expectedSize Int? @map("expected_size")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant      Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parentGroup Group?  @relation("GroupHierarchy", fields: [parentGroupId], references: [id], onDelete: Restrict)
+  children    Group[] @relation("GroupHierarchy")
+
+  memberships    Membership[]
+  offeringGroups OfferingGroup[]
+  sessionGroups  SessionGroup[]
+
+  ancestorClosures   GroupClosure[] @relation("ClosureAncestor")
+  descendantClosures GroupClosure[] @relation("ClosureDescendant")
+
+  @@index([tenantId])
+  @@index([parentGroupId])
+  @@map("group")
+}
+
+/// Transitive closure of the Group tree, maintained by trigger (TAXONOMY.md
+/// §6, resolving the §9.3 open item in favour of write-time recompute).
+///
+/// Contains self-pairs at depth 0, so "G and everything conflicting with G" is
+/// a single indexed lookup instead of a recursive CTE re-walked per check.
+model GroupClosure {
+  ancestorId   String @map("ancestor_id")
+  descendantId String @map("descendant_id")
+  tenantId     String @map("tenant_id")
+
+  /// 0 = self, 1 = direct child, n = n levels down.
+  depth Int
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ancestor   Group  @relation("ClosureAncestor", fields: [ancestorId], references: [id], onDelete: Cascade)
+  descendant Group  @relation("ClosureDescendant", fields: [descendantId], references: [id], onDelete: Cascade)
+
+  @@id([ancestorId, descendantId])
+  @@index([descendantId])
+  @@index([tenantId])
+  @@map("group_closure")
+}
+
+/// Person ↔ Group.
+model Membership {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+  personId String @map("person_id")
+  groupId  String @map("group_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+  group  Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([personId, groupId])
+  @@index([tenantId])
+  @@index([groupId])
+  @@map("membership")
+}
+
+// ---------------------------------------------------------------------------
+// Space
+// ---------------------------------------------------------------------------
+
+/// Federation-ownable (a consortium's shared lecture hall). Exactly one of
+/// tenant_id / federation_id is set — enforced by a CHECK constraint in the
+/// companion migration, not by convention.
+///
+/// Online delivery is a virtual Room (is_virtual), not a boolean on Session —
+/// keeps room-assignment logic uniform (TAXONOMY.md §2).
+model Room {
+  id           String  @id @default(uuid(7))
+  tenantId     String? @map("tenant_id")
+  federationId String? @map("federation_id")
+
+  code     String
+  name     String
+  capacity Int     @default(0)
+  location String?
+
+  /// Desirability. Soft constraints minimize use of high-ranking rooms.
+  ranking Int @default(0)
+
+  isVirtual Boolean @default(false) @map("is_virtual")
+  isActive  Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant     Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  federation Federation? @relation(fields: [federationId], references: [id], onDelete: Cascade)
+
+  roomEquipment RoomEquipment[]
+  sessionRooms  SessionRoom[]
+
+  @@index([tenantId])
+  @@index([federationId])
+  @@map("room")
+}
+
+/// Tenant-defined tags (projector, PC lab, lab bench). Federation-ownable for
+/// the same reason Room is: a shared hall's equipment must be legible to every
+/// member tenant that can book it.
+model Equipment {
+  id           String  @id @default(uuid(7))
+  tenantId     String? @map("tenant_id")
+  federationId String? @map("federation_id")
+
+  key         String
+  name        String
+  description String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant     Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  federation Federation? @relation(fields: [federationId], references: [id], onDelete: Cascade)
+
+  roomEquipment     RoomEquipment[]
+  offeringEquipment OfferingEquipment[]
+
+  @@index([tenantId])
+  @@index([federationId])
+  @@map("equipment")
+}
+
+/// Room ↔ Equipment.
+model RoomEquipment {
+  roomId      String @map("room_id")
+  equipmentId String @map("equipment_id")
+
+  /// Nullable: most tags are presence-only ("has a projector"); quantity
+  /// matters only for countable equipment (24 workstations).
+  quantity Int?
+
+  /// Nullable for federation-owned rooms, which have no owning tenant.
+  tenantId String? @map("tenant_id")
+
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  room      Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  equipment Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  @@id([roomId, equipmentId])
+  @@index([equipmentId])
+  @@index([tenantId])
+  @@map("room_equipment")
+}
+
+// ---------------------------------------------------------------------------
+// Time — per-tenant configuration, never global (TAXONOMY.md §2)
+// ---------------------------------------------------------------------------
+
+/// Block length, blocks/day, active days, start hour. The prototype's
+/// `timeslot % 3` arithmetic and `timeslot > 14`-means-Saturday MUST resolve
+/// against this per tenant. No universal grid shape is seeded anywhere.
+model TimeGrid {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  name String
+
+  blockLengthMinutes Int @map("block_length_minutes")
+  blocksPerDay       Int @map("blocks_per_day")
+
+  /// ISO-8601 weekday numbers (1 = Monday … 7 = Sunday) this grid schedules
+  /// on. An array, not a bitmask or a hardcoded Mon–Fri assumption.
+  activeDays Int[] @map("active_days")
+
+  startHour   Int @default(8) @map("start_hour")
+  startMinute Int @default(0) @map("start_minute")
+
+  /// Minutes between consecutive blocks.
+  breakMinutes Int @default(0) @map("break_minutes")
+
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  terms    Term[]
+  sessions Session[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("time_grid")
+}
+
+/// Academic term / semester. Core from day one — constraints like "minimize
+/// sessions in exam weeks" resolve against CalendarPeriod, never `weeks[-n:]`.
+model Term {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  name       String
+  startDate  DateTime @map("start_date") @db.Date
+  endDate    DateTime @map("end_date") @db.Date
+  timeGridId String?  @map("time_grid_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  timeGrid TimeGrid? @relation(fields: [timeGridId], references: [id], onDelete: Restrict)
+
+  calendarPeriods CalendarPeriod[]
+  offerings       Offering[]
+  sessions        Session[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("term")
+}
+
+/// Holidays, break weeks and exam periods as structured data.
+model CalendarPeriod {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+  termId   String @map("term_id")
+
+  kind      CalendarPeriodKind
+  name      String
+  startDate DateTime           @map("start_date") @db.Date
+  endDate   DateTime           @map("end_date") @db.Date
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  term   Term   @relation(fields: [termId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([termId, kind])
+  @@map("calendar_period")
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling — the Offering / Session split (TAXONOMY.md §2)
+// ---------------------------------------------------------------------------
+
+/// Tenant-defined vocabulary replacing a fixed Lecture/Exam/Event split.
+/// A kind may legitimately have no Group at all (e.g. staff_meeting) — which
+/// is exactly why Constraints must declare the kinds they apply to.
+model SessionKind {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  key   String
+  name  String
+  color String?
+
+  /// Declares whether this kind is expected to carry Group assignments. Lets
+  /// the API reject a Group-based constraint scoped to a groupless kind
+  /// (TAXONOMY.md §9.5).
+  requiresGroup Boolean @default(true) @map("requires_group")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  offerings        Offering[]
+  sessions         Session[]
+  constraintScopes ConstraintScope[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("session_kind")
+}
+
+/// DEMAND: "this must happen N times, needs a Lecturer with role X, a Group, a
+/// Room with equipment Y, kind Z." The solver's input. Federation-ownable, for
+/// cross-enrolled electives shared across member tenants.
+model Offering {
+  id           String  @id @default(uuid(7))
+  tenantId     String? @map("tenant_id")
+  federationId String? @map("federation_id")
+
+  termId String  @map("term_id")
+  kindId String  @map("kind_id")
+  code   String?
+  title  String
+
+  /// How many Sessions must exist for this Offering (hard constraint: exact
+  /// frequency). The prototype's `lectures[lecture]` count.
+  frequency Int @default(1)
+
+  /// Length of each Session in TimeGrid blocks.
+  durationBlocks Int @default(1) @map("duration_blocks")
+
+  /// Role a lecturer must hold to lead this Offering. Nullable: many kinds
+  /// don't constrain who leads them.
+  requiredRoleId String? @map("required_role_id")
+
+  /// Minimum room capacity. Nullable — derived from Group size when absent.
+  requiredCapacity Int? @map("required_capacity")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  federation   Federation? @relation(fields: [federationId], references: [id], onDelete: Cascade)
+  term         Term        @relation(fields: [termId], references: [id], onDelete: Cascade)
+  kind         SessionKind @relation(fields: [kindId], references: [id], onDelete: Restrict)
+  requiredRole Role?       @relation(fields: [requiredRoleId], references: [id], onDelete: SetNull)
+
+  groups           OfferingGroup[]
+  lecturers        OfferingLecturer[]
+  equipment        OfferingEquipment[]
+  sessions         Session[]
+  constraintScopes ConstraintScope[]
+
+  @@index([tenantId])
+  @@index([federationId])
+  @@index([termId])
+  @@map("offering")
+}
+
+/// Offering ↔ Group. Many-to-many: a cross-enrolled elective serves groups
+/// from more than one tenant, and collapsing this to a single FK would be a
+/// migration to undo later.
+model OfferingGroup {
+  offeringId String @map("offering_id")
+  groupId    String @map("group_id")
+  tenantId   String @map("tenant_id")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  offering Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  group    Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([offeringId, groupId])
+  @@index([groupId])
+  @@index([tenantId])
+  @@map("offering_group")
+}
+
+/// Offering ↔ Person, as the lecturer(s) demanded. Role recorded per row:
+/// "lecturer" is just the fixed universal Role, so hardcoding it as a column
+/// name would push vocabulary into schema.
+model OfferingLecturer {
+  offeringId String  @map("offering_id")
+  personId   String  @map("person_id")
+  tenantId   String  @map("tenant_id")
+  roleId     String? @map("role_id")
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  offering Offering @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  person   Person   @relation(fields: [personId], references: [id], onDelete: Cascade)
+  role     Role?    @relation(fields: [roleId], references: [id], onDelete: SetNull)
+
+  @@id([offeringId, personId])
+  @@index([personId])
+  @@index([tenantId])
+  @@map("offering_lecturer")
+}
+
+/// Offering ↔ Equipment: the "needs a Room with equipment Y" requirement.
+model OfferingEquipment {
+  offeringId  String @map("offering_id")
+  equipmentId String @map("equipment_id")
+  tenantId    String @map("tenant_id")
+
+  /// Minimum count required, for countable equipment.
+  quantity Int?
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  offering  Offering  @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  equipment Equipment @relation(fields: [equipmentId], references: [id], onDelete: Cascade)
+
+  @@id([offeringId, equipmentId])
+  @@index([equipmentId])
+  @@index([tenantId])
+  @@map("offering_equipment")
+}
+
+/// PLACED INSTANCE: one atomic Session at a specific week/day/block. This is
+/// what gets displayed, moved, swapped, locked, exported and notified about.
+///
+/// Placement is stored as TimeGrid coordinates (term_week / day_of_week /
+/// block_index) because that is what constraints reason about. starts_at and
+/// ends_at are DERIVED convenience columns for iCal export and UI rendering —
+/// never the source of truth for "same day" or "adjacent slot" logic.
+model Session {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  offeringId String  @map("offering_id")
+  termId     String  @map("term_id")
+  kindId     String  @map("kind_id")
+  timeGridId String? @map("time_grid_id")
+
+  /// 1-based week within the Term.
+  termWeek Int @map("term_week")
+
+  /// ISO weekday, 1 = Monday … 7 = Sunday. Resolved against TimeGrid.activeDays.
+  dayOfWeek Int @map("day_of_week")
+
+  /// 0-based block within the day. Resolved against TimeGrid.blocksPerDay —
+  /// never `timeslot % 3`.
+  blockIndex Int @map("block_index")
+
+  /// Length in blocks; defaults from Offering.durationBlocks.
+  durationBlocks Int @default(1) @map("duration_blocks")
+
+  /// Excluded from the next solve when true — the solver fills empty slots and
+  /// never overwrites a lock (TAXONOMY.md §3). Boolean rather than a status
+  /// enum because locking is orthogonal to placement state; backed by a
+  /// partial index on the solver's exclusion path.
+  isLocked Boolean @default(false) @map("is_locked")
+
+  /// Generation this Session's placement came from. Sessions are current
+  /// materialized state; history lives in SessionEvent.
+  generationId String? @map("generation_id")
+
+  startsAt DateTime? @map("starts_at") @db.Timestamptz(3)
+  endsAt   DateTime? @map("ends_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  offering   Offering    @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  term       Term        @relation(fields: [termId], references: [id], onDelete: Cascade)
+  kind       SessionKind @relation(fields: [kindId], references: [id], onDelete: Restrict)
+  timeGrid   TimeGrid?   @relation(fields: [timeGridId], references: [id], onDelete: SetNull)
+  generation Generation? @relation(fields: [generationId], references: [id], onDelete: SetNull)
+
+  groups     SessionGroup[]
+  people     SessionPerson[]
+  rooms      SessionRoom[]
+  violations ConstraintViolation[]
+
+  events           SessionEvent[] @relation("EventSubject")
+  counterpartEvents SessionEvent[] @relation("EventCounterpart")
+
+  @@index([tenantId])
+  @@index([offeringId])
+  @@index([generationId])
+  @@index([tenantId, termId, termWeek, dayOfWeek, blockIndex])
+  @@map("session")
+}
+
+// --- Assignment: three explicit tables, not one polymorphic table. ----------
+// A polymorphic assignment(target_type, target_id) cannot carry real foreign
+// keys, so the database would stop guaranteeing that an assignment points at a
+// live row — unacceptable on the table both the solver and the notification
+// fan-out read. The three relations also have different cardinality rules and
+// want different indexes (double-booking checks are per-target).
+
+/// Session ↔ Group.
+model SessionGroup {
+  sessionId String @map("session_id")
+  groupId   String @map("group_id")
+  tenantId  String @map("tenant_id")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  group   Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([sessionId, groupId])
+  @@index([groupId])
+  @@index([tenantId])
+  @@map("session_group")
+}
+
+/// Session ↔ Person, covering BOTH the assigned lecturer(s) and directly
+/// assigned individuals. role_id distinguishes them: "lecturer" is the fixed
+/// universal Role, so a separate session_lecturer table would hardcode
+/// vocabulary the taxonomy explicitly keeps open.
+model SessionPerson {
+  sessionId String  @map("session_id")
+  personId  String  @map("person_id")
+  tenantId  String  @map("tenant_id")
+  roleId    String? @map("role_id")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  person  Person  @relation(fields: [personId], references: [id], onDelete: Cascade)
+  role    Role?   @relation(fields: [roleId], references: [id], onDelete: SetNull)
+
+  @@id([sessionId, personId])
+  @@index([personId])
+  @@index([tenantId])
+  @@index([roleId])
+  @@map("session_person")
+}
+
+/// Session ↔ Room. Modelled many-to-many rather than a Session.room_id FK
+/// because split/parallel rooms are real, and the double-booking check wants
+/// its own index here.
+model SessionRoom {
+  sessionId String @map("session_id")
+  roomId    String @map("room_id")
+  tenantId  String @map("tenant_id")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  room    Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@id([sessionId, roomId])
+  @@index([roomId])
+  @@index([tenantId])
+  @@map("session_room")
+}
+
+// ---------------------------------------------------------------------------
+// Constraints — structured rule builder, not an expression DSL
+// ---------------------------------------------------------------------------
+
+/// A configured instance of a predefined constraint type. `params` is JSONB
+/// because rule-builder parameters vary per type (max_online_ratio takes a
+/// percentage, lecturer_veto takes day/slot lists) — modelling each type's
+/// params as columns would mean a migration per constraint type.
+model Constraint {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  /// Key from the constraint-type library (§7), e.g. `no_double_booking_room`,
+  /// `max_online_ratio_per_group`, `minimize_first_block`.
+  type String
+
+  name     String
+  severity ConstraintSeverity
+
+  /// Penalty weight. Meaningful only for SOFT; a CHECK in the companion
+  /// migration enforces that HARD rows leave it null and SOFT rows set it.
+  weight Int?
+
+  /// Rule-builder parameters, shape determined by `type`.
+  params Json @default("{}")
+
+  isEnabled Boolean  @default(true) @map("is_enabled")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  scopes     ConstraintScope[]
+  violations ConstraintViolation[]
+
+  @@index([tenantId])
+  @@index([tenantId, isEnabled])
+  @@map("constraint_def")
+}
+
+/// Which Offerings and/or kinds a Constraint applies to.
+///
+/// A row scopes by kind, by offering, or by both (offering-and-kind). A
+/// Constraint with NO scope rows applies tenant-wide. A CHECK in the companion
+/// migration requires at least one of the two FKs per row, so an empty scope
+/// row cannot silently mean "everything".
+model ConstraintScope {
+  id           String  @id @default(uuid(7))
+  tenantId     String  @map("tenant_id")
+  constraintId String  @map("constraint_id")
+  offeringId   String? @map("offering_id")
+  kindId       String? @map("kind_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  constraint Constraint   @relation(fields: [constraintId], references: [id], onDelete: Cascade)
+  offering   Offering?    @relation(fields: [offeringId], references: [id], onDelete: Cascade)
+  kind       SessionKind? @relation(fields: [kindId], references: [id], onDelete: Cascade)
+
+  @@unique([constraintId, offeringId, kindId])
+  @@index([tenantId])
+  @@index([offeringId])
+  @@index([kindId])
+  @@map("constraint_scope")
+}
+
+// ---------------------------------------------------------------------------
+// History — Generation snapshots + append-only event log (TAXONOMY.md §3)
+// ---------------------------------------------------------------------------
+
+/// An immutable, versioned snapshot: a solver run or a manual baseline.
+/// Manual edits are events applied ON TOP of a Generation to produce current
+/// state. UPDATE and DELETE are revoked from the app role in the companion
+/// migration — "immutable" enforced by the database.
+model Generation {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  /// Sequential per tenant.
+  version Int
+
+  parentGenerationId String? @map("parent_generation_id")
+
+  source GenerationSource
+  status GenerationStatus @default(PENDING)
+
+  /// Exactly one Generation per tenant is current, enforced by a partial
+  /// unique index in the companion migration.
+  isCurrent Boolean @default(false) @map("is_current")
+
+  /// Solver run metadata: seed, wall time, penalty score, algorithm params.
+  solverMeta Json? @map("solver_meta")
+
+  /// Populated instead of placements when the solver reports infeasibility.
+  infeasibilityReport Json? @map("infeasibility_report")
+
+  createdById String?  @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  appliedAt   DateTime? @map("applied_at") @db.Timestamptz(3)
+
+  tenant           Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parentGeneration Generation? @relation("GenerationLineage", fields: [parentGenerationId], references: [id], onDelete: SetNull)
+  children         Generation[] @relation("GenerationLineage")
+  createdBy        Person?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  sessions   Session[]
+  events     SessionEvent[]
+  violations ConstraintViolation[]
+
+  @@unique([tenantId, version])
+  @@index([tenantId])
+  @@index([parentGenerationId])
+  @@map("generation")
+}
+
+/// Append-only log of manual edits, applied on top of a baseline Generation.
+/// Enables full replay/rollback to any prior point.
+model SessionEvent {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  /// Monotonic ordering for replay. Gapless per-tenant ordering is NOT
+  /// guaranteed by a global sequence, so replay orders by (created_at, seq).
+  seq BigInt @default(autoincrement())
+
+  /// Baseline this event applies on top of.
+  generationId String @map("generation_id")
+
+  type SessionEventType
+
+  /// Nullable so a DELETE event survives its Session being removed — the log
+  /// must outlive its subject.
+  sessionId String? @map("session_id")
+
+  /// The other Session in a SWAP.
+  counterpartSessionId String? @map("counterpart_session_id")
+
+  /// Before/after placement snapshot. Self-contained so replay never depends
+  /// on rows that may since have changed.
+  payload Json @default("{}")
+
+  actorPersonId String?  @map("actor_person_id")
+  reason        String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant              Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  generation          Generation  @relation(fields: [generationId], references: [id], onDelete: Cascade)
+  session             Session?    @relation("EventSubject", fields: [sessionId], references: [id], onDelete: SetNull)
+  counterpartSession  Session?    @relation("EventCounterpart", fields: [counterpartSessionId], references: [id], onDelete: SetNull)
+  actor               Person?     @relation(fields: [actorPersonId], references: [id], onDelete: SetNull)
+
+  violations ConstraintViolation[]
+
+  @@index([tenantId, seq])
+  @@index([generationId])
+  @@index([sessionId])
+  @@map("session_event")
+}
+
+/// Persisted CURRENT violations, powering warn-and-allow (TAXONOMY.md §3).
+///
+/// A manual edit that breaks a hard constraint is permitted, so the violation
+/// must live somewhere queryable rather than in a one-time response. Rows are
+/// refreshed synchronously in the same transaction that emits the
+/// SessionEvent — never on a lag or a batch job.
+model ConstraintViolation {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  constraintId String @map("constraint_id")
+  sessionId    String @map("session_id")
+
+  severity ConstraintSeverity
+
+  /// Weight contribution for SOFT violations; null for HARD.
+  penalty Int?
+
+  /// Which entities collided, for UI display without re-running the check.
+  detail Json @default("{}")
+
+  /// Provenance: the event or generation that introduced this violation.
+  detectedByEventId String? @map("detected_by_event_id")
+  generationId      String? @map("generation_id")
+
+  detectedAt DateTime @default(now()) @map("detected_at") @db.Timestamptz(3)
+
+  tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  constraint      Constraint    @relation(fields: [constraintId], references: [id], onDelete: Cascade)
+  session         Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  detectedByEvent SessionEvent? @relation(fields: [detectedByEventId], references: [id], onDelete: SetNull)
+  generation      Generation?   @relation(fields: [generationId], references: [id], onDelete: SetNull)
+
+  @@unique([constraintId, sessionId])
+  @@index([tenantId, severity])
+  @@index([sessionId])
+  @@map("constraint_violation")
+}

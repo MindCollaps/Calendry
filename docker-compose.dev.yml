@@ -1,5 +1,5 @@
 services:
-  xxx-changeme-app:
+  calendry-app:
     build:
       context: .
       dockerfile: .config/Dockerfile.dev
@@ -19,6 +19,11 @@ services:
         condition: service_healthy
 
   db:
-    image: postgres:15-alpine
+    # Must match docker-compose.yml — dev and prod on different major versions
+    # means migrations are verified against something production never runs.
+    image: 'postgres:18.1-alpine'
     volumes:
-      - ./db/:/var/lib/postgresql/data:rw
+      - ./db/:/var/lib/postgresql/18/docker:rw
+      # Compose replaces volume lists rather than merging them, so the runtime
+      # role provisioning from docker-compose.yml must be repeated here.
+      - ./.config/db-init:/docker-entrypoint-initdb.d:ro

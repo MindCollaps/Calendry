@@ -1,5 +1,5 @@
 {
-    "name": "xxx-changeme Dev",
+    "name": "Calendry Dev",
     "image": "mcr.microsoft.com/devcontainers/universal",
     "hostRequirements": {
         "cpus": 2,
@@ -19,5 +19,5 @@
     },
     "forwardPorts": [3000, 51212],
     "postCreateCommand": "bash .devcontainer/setup.sh",
-    "workspaceFolder": "/workspaces/xxx-changeme"
+    "workspaceFolder": "/workspaces/Calendry"
 }
