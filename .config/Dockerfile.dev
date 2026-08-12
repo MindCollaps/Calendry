@@ -1,0 +1,18 @@
+FROM node:24-slim
+
+WORKDIR /app
+ENV NODE_ENV=development
+
+RUN apt-get update
+RUN apt-get install -y default-mysql-client git curl unzip
+
+# Install Bun
+ENV BUN_INSTALL=/usr/local
+RUN curl -fsSL https://bun.sh/install | bash
+
+EXPOSE 3000
+
+COPY .config/entrypoint.dev.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+CMD ["/usr/local/bin/entrypoint.sh"]

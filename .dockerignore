@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.gitignore
+data
+*.md
+.env
+.DS_Store
+tsconfig.client.tsbuildinfo
+bun-debug.log*

@@ -1,0 +1,24 @@
+services:
+  xxx-changeme-app:
+    build:
+      context: .
+      dockerfile: .config/Dockerfile.dev
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - HOME=/app
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+      - "51212:51212"
+    volumes:
+      - .:/app:rw
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - ./db/:/var/lib/postgresql/data:rw
