@@ -13,10 +13,16 @@ function colorToRgb(hex: string): [r: number, g: number, b: number] | null {
     }));
     if (!result) throw new Error(`Failed to convert color ${ hex } from hex to rgb`);
 
+    const [, r, g, b] = result;
+
+    if (r === undefined || g === undefined || b === undefined) {
+        throw new Error(`Failed to convert color ${ hex } from hex to rgb`);
+    }
+
     return [
-        parseInt(result[1], 16),
-        parseInt(result[2], 16),
-        parseInt(result[3], 16),
+        parseInt(r, 16),
+        parseInt(g, 16),
+        parseInt(b, 16),
     ];
 }
 
@@ -96,20 +102,20 @@ export default defineNuxtModule((_, nuxt) => {
     });
 
     addTemplate({
-        filename: 'radar/colors.ts',
-        getContents: () => `export const radarColors = ${ JSON.stringify(variables) };\nexport const radarThemes = ${ JSON.stringify(themes) };`,
+        filename: 'calendry/colors.ts',
+        getContents: () => `export const calendryColors = ${ JSON.stringify(variables) };\nexport const calendryThemes = ${ JSON.stringify(themes) };`,
         write: true,
     });
 
     const resolver = createResolver(import.meta.url);
-    const path = resolver.resolve('../.nuxt/radar/colors.ts');
+    const path = resolver.resolve('../.nuxt/calendry/colors.ts');
     addImports([
         {
-            name: 'radarColors',
+            name: 'calendryColors',
             from: path,
         },
         {
-            name: 'radarThemes',
+            name: 'calendryThemes',
             from: path,
         },
     ]);

@@ -1,5 +1,26 @@
 import type { PartialRecord } from '../../types';
 
+/**
+ * The colour palette.
+ *
+ * The two neutral ramps are named by ROLE and by distance from the page ground,
+ * not by lightness:
+ *
+ *   surface0…surface7  the ground and the things stacked on it
+ *   content0…content7  what sits on those surfaces — text, icons, hairlines
+ *
+ * That naming is what makes theming legible. The ramps were previously called
+ * `darkgray*` and `lightgray*`, which described their values in one theme and
+ * lied in the other: a "light" theme worked by swapping the two ramps, so
+ * `$darkgray950` rendered near-white and every call site read backwards.
+ * Under role names, `surface1` is the second surface layer in every theme, and
+ * only its value changes.
+ *
+ * The base palette is LIGHT. `dark` swaps the two ramps back. There is
+ * deliberately no `light` entry: with a light base it would be an empty
+ * override rendering identically to `default`, which is exactly the duplicate
+ * that made the original bug invisible.
+ */
 export const colorsList = {
     //#region neutrals
     white: '#FAFAFA',
@@ -18,24 +39,26 @@ export const colorsList = {
     whiteAlpha24: '#FAFAFA3d',
     whiteAlpha36: '#FAFAFA5c',
     whiteAlpha64: '#FAFAFAa3',
-    
-    lightgray0: '#F7F7FA',
-    lightgray50: '#F2F2F7',
-    lightgray100: '#EDEDF2',
-    lightgray125: '#E6E6EB',
-    lightgray150: '#DEDEE7',
-    lightgray200: '#D5D5E4',
-    lightgray300: '#bfbfc2',
-    lightgray400: '#aaaaac',
 
-    darkgray1000: '#131316',
-    darkgray950: '#18181B',
-    darkgray900: '#202024',
-    darkgray875: '#26262C',
-    darkgray850: '#2B2B33',
-    darkgray800: '#30303C',
-    darkgray700: '#3c3c3f',
-    darkgray600: '#525255',
+    // Surfaces: the page ground (surface0) outward. Light in the base theme.
+    surface0: '#F7F7FA',
+    surface1: '#F2F2F7',
+    surface2: '#EDEDF2',
+    surface3: '#E6E6EB',
+    surface4: '#DEDEE7',
+    surface5: '#D5D5E4',
+    surface6: '#bfbfc2',
+    surface7: '#aaaaac',
+
+    // Content: primary text (content0) through the faintest hairline.
+    content0: '#131316',
+    content1: '#18181B',
+    content2: '#202024',
+    content3: '#26262C',
+    content4: '#2B2B33',
+    content5: '#30303C',
+    content6: '#3c3c3f',
+    content7: '#525255',
 
     primary700: '#512da8',
     primary600: '#6743b2',
@@ -76,45 +99,32 @@ export const colorsList = {
 
 export type ColorsList = keyof typeof colorsList;
 
+/**
+ * `dark` swaps the two ramps: surfaces take the dark values, content takes the
+ * light ones. Nothing else is theme-dependent — the semantic colours read
+ * acceptably on both grounds and are deliberately not duplicated here.
+ */
 export const themesList = {
-    light: {
-        darkgray1000: '#F7F7FA',
-        darkgray950: '#F2F2F7',
-        darkgray900: '#EDEDF2',
-        darkgray875: '#E6E6EB',
-        darkgray850: '#DEDEE7',
-        darkgray800: '#D5D5E4',
-        darkgray700: '#bfbfc2',
-        darkgray600: '#aaaaac',
-
-        lightgray0: '#131316',
-        lightgray50: '#18181B',
-        lightgray100: '#202024',
-        lightgray125: '#26262C',
-        lightgray150: '#2B2B33',
-        lightgray200: '#30303C',
-        lightgray300: '#3c3c3f',
-        lightgray400: '#525255',
-    },
     dark: {
-        lightgray0: '#131316',
-        lightgray50: '#18181B',
-        lightgray100: '#202024',
-        lightgray125: '#26262C',
-        lightgray150: '#2B2B33',
-        lightgray200: '#30303C',
-        lightgray300: '#3c3c3f',
-        lightgray400: '#525255',
+        surface0: '#131316',
+        surface1: '#18181B',
+        surface2: '#202024',
+        surface3: '#26262C',
+        surface4: '#2B2B33',
+        surface5: '#30303C',
+        surface6: '#3c3c3f',
+        surface7: '#525255',
 
-        darkgray1000: '#F7F7FA',
-        darkgray950: '#F2F2F7',
-        darkgray900: '#EDEDF2',
-        darkgray875: '#E6E6EB',
-        darkgray850: '#DEDEE7',
-        darkgray800: '#D5D5E4',
-        darkgray700: '#bfbfc2',
-        darkgray600: '#aaaaac',
+        content0: '#F7F7FA',
+        content1: '#F2F2F7',
+        content2: '#EDEDF2',
+        content3: '#E6E6EB',
+        content4: '#DEDEE7',
+        content5: '#D5D5E4',
+        content6: '#bfbfc2',
+        content7: '#aaaaac',
     },
 } satisfies Record<string, PartialRecord<ColorsList, string>>;
 
+/** 'default' is the light base; the UI labels it "Light". */
 export type ThemesList = keyof typeof themesList | 'default';

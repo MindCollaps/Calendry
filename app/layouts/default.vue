@@ -4,7 +4,7 @@
             class="header"
         >
             <div class="header-text">
-                Swindler
+                Calendry
             </div>
             <view-menu/>
             <view-login/>
@@ -15,7 +15,6 @@
         </div>
         <common-toast-container/>
         <view-version/>
-        <changelog-popup/>
     </div>
 </template>
 
@@ -23,7 +22,6 @@
 import ViewMenu from '~/components/views/ViewMenu.vue';
 import ViewLogin from '~/components/views/ViewLogin.vue';
 import ViewVersion from '~/components/views/ViewVersion.vue';
-import ChangelogPopup from '~/components/common/CommonChangelogPopup.vue';
 import { colorsList } from '#imports';
 
 defineSlots<{ default: () => any }>();
@@ -47,7 +45,7 @@ useLayout();
     width: 100%;
     padding: 9px;
 
-    background: $darkgray1000;
+    background: $surface0;
 
     &-text {
         display: flex;

@@ -18,6 +18,6 @@ const config = useRuntimeConfig();
     bottom: 10px;
 
     font-size: 0.8rem;
-    color: $lightgray400;
+    color: $content7;
 }
 </style>

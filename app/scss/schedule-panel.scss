@@ -1,0 +1,81 @@
+// Colours and tokens are resolved at mixin-DEFINITION scope, so this file
+// must load them itself — the globally prepended additionalData applies to
+// the entry stylesheet, not to partials pulled in with @use.
+@use './colors' as *;
+@use './variables' as *;
+@use './tokens' as *;
+
+// Shared chrome for the two secondary schedule panels — the off-grid tray and
+// the violations list. They are different concerns with the same shape, so the
+// styling is a mixin rather than a base class: neither panel inherits the
+// other's meaning, only its frame.
+@mixin schedule-panel {
+    padding: 14px var(--space-6);
+    border-radius: var(--radius-xl);
+    background: $surface1;
+
+    h2 {
+        display: flex;
+        gap: var(--space-3);
+        align-items: center;
+
+        margin: 0 0 10px;
+
+        font-size: var(--font-size-sm);
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        color: $warning300;
+        text-transform: uppercase;
+
+        svg { width: 15px; height: 15px; }
+    }
+
+    ul {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-4);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    li {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2) 10px;
+        align-items: baseline;
+
+        font-size: var(--font-size-sm);
+        color: $surface7;
+    }
+
+    button {
+        cursor: pointer;
+
+        display: flex;
+        gap: 5px;
+        align-items: center;
+
+        padding: 0;
+        border: 0;
+
+        font-family: inherit;
+        font-size: var(--font-size-sm);
+        font-weight: 600;
+        color: $content5;
+        text-align: left;
+
+        background: none;
+
+        svg { width: 14px; height: 14px; }
+
+        .is-hard { color: $error300; }
+        .is-soft { color: $warning400; }
+
+        @include hover() {
+            &:hover { color: $primary300; text-decoration: underline; }
+        }
+
+        &:focus-visible { outline: 2px solid $primary400; outline-offset: var(--space-1); }
+    }
+}

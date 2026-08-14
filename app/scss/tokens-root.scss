@@ -1,0 +1,35 @@
+// The single emission point for the sizing tokens.
+//
+// Registered in nuxt.config's `css` array so it is bundled exactly once.
+// It previously lived in layout.scss, which both layouts @use — that put an
+// identical :root block in two CSS chunks. Harmless, but avoidable.
+//
+// The SCSS aliases in tokens.scss point at these properties; the px values
+// exist only here.
+:root {
+    // Font size — 6 steps, collapsed from 14 values.
+    --font-size-xs: 11px;    // was 10, 10.5, 11, 11.5 — uppercase labels, meta
+    --font-size-sm: 12.5px;  // was 12, 12.5 — secondary text, chips
+    --font-size-md: 13px;    // was 13, 13.5, 14 — body default, the most-used value
+    --font-size-lg: 17px;    // panel and section titles
+    --font-size-xl: 24px;    // page titles
+    --font-size-2xl: 32px;   // was 32, 38 — display
+
+    // Border radius — 4 steps. The stray 9px was an inner corner and stays a
+    // derivation: calc(var(--radius-xl) - 1px).
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 10px;
+
+    // Spacing — 8 steps. Outliers (5, 7, 9, 10, 14, 20) snap to a neighbour;
+    // reducing the choices is the point of a scale.
+    --space-1: 2px;
+    --space-2: 4px;
+    --space-3: 6px;
+    --space-4: 8px;
+    --space-5: 12px;
+    --space-6: 16px;
+    --space-7: 24px;
+    --space-8: 32px;
+}

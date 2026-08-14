@@ -66,6 +66,12 @@ enum SessionEventType {
   LOCK
   UNLOCK
 
+  /// A whole Generation promoted to baseline. Emitted ONCE per apply, not once
+  /// per Session: the Generation is already the immutable record of those
+  /// placements, so per-Session events would duplicate it and make replay
+  /// ambiguous (apply the snapshot, the events, or both?).
+  APPLY_GENERATION
+
   @@map("session_event_type")
 }
 
@@ -144,6 +150,9 @@ model Tenant {
   sessionEvents        SessionEvent[]
   constraintViolations ConstraintViolation[]
   groupClosures        GroupClosure[]
+  accessRoles          AccessRole[]
+  accessRolePermissions AccessRolePermission[]
+  personAccessRoles    PersonAccessRole[]
 
   @@index([federationId])
   @@map("tenant")
@@ -181,6 +190,9 @@ model Person {
   offeringLecturers OfferingLecturer[]
   generations       Generation[]
   sessionEvents     SessionEvent[]
+  accountLink       AccountPerson?
+  authSessions      AuthSession[]
+  accessRoles       PersonAccessRole[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, externalRef])
@@ -962,4 +974,186 @@ model ConstraintViolation {
   @@index([tenantId, severity])
   @@index([sessionId])
   @@map("constraint_violation")
+}
+
+// ---------------------------------------------------------------------------
+// AUTHENTICATION — the pre-tenant data plane
+// ---------------------------------------------------------------------------
+//
+// These three tables sit OUTSIDE row-level security, and that is a deliberate,
+// documented exception (the second one in this system, after Federation-owned
+// resources).
+//
+// The reason is structural rather than convenient: a session must be read
+// BEFORE the tenant is known, because the session is what determines the
+// tenant. An RLS policy on these tables could never be satisfied — there is no
+// tenant context to compare against yet. They are therefore only ever queried
+// by primary key or unique token from a verified cookie, never by tenant
+// filter, and no route may expose them directly.
+
+/// A login credential, belonging to a HUMAN rather than to a Tenant.
+///
+/// Person is tenant-scoped by design (TAXONOMY.md §2: `person.tenant_id` is NOT
+/// NULL), so someone working at two institutions genuinely has two Person rows.
+/// Making Person the credential holder would give that human two passwords and
+/// two reset flows. Account is the tenant-independent identity that owns them
+/// both; the active Tenant is chosen after login, never supplied by the client.
+model Account {
+  id           String  @id @default(uuid(7))
+  email        String  @unique
+  passwordHash String  @map("password_hash")
+  isActive     Boolean @default(true) @map("is_active")
+
+  /// Set by the operator reset CLI. While true, login authenticates but issues
+  /// NO session — the account must change its password first. Deliberately not
+  /// a "restricted session": a half-privileged session is a worse failure mode
+  /// than asking for the password twice.
+  mustChangePassword Boolean @default(false) @map("must_change_password")
+
+  lastLoginAt DateTime? @map("last_login_at") @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  persons  AccountPerson[]
+  sessions AuthSession[]
+
+  @@map("account")
+}
+
+/// Account ↔ Person: the identities one login can act as, one per Tenant.
+model AccountPerson {
+  accountId String   @map("account_id")
+  personId  String   @map("person_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  person  Person  @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  /// A Person answers to exactly one Account — two credentials controlling the
+  /// same tenant identity would make audit attribution ambiguous.
+  @@id([accountId, personId])
+  @@unique([personId])
+  @@map("account_person")
+}
+
+/// A server-side session, addressed by an opaque token held in an httpOnly
+/// cookie.
+///
+/// Database-backed rather than a JWT because revocation has to be immediate:
+/// disabling a Person, revoking an access role, or switching tenant must take
+/// effect on the next request, and JWT claims stay valid until they expire.
+model AuthSession {
+  id        String @id @default(uuid(7))
+  accountId String @map("account_id")
+
+  /// Which Person (and therefore which Tenant) this session is currently acting
+  /// as. Null immediately after login when the Account has several Persons and
+  /// tenant selection is still pending.
+  activePersonId String? @map("active_person_id")
+
+  /// SHA-256 of the bearer token. The token itself is never stored, so database
+  /// read access does not grant the ability to impersonate a session.
+  tokenHash String @unique @map("token_hash")
+
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  userAgent String? @map("user_agent")
+  ipAddress String? @map("ip_address")
+
+  account      Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  activePerson Person? @relation(fields: [activePersonId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@index([activePersonId])
+  @@map("auth_session")
+}
+
+// ---------------------------------------------------------------------------
+// AUTHORIZATION — permissions and tenant-defined access roles
+// ---------------------------------------------------------------------------
+
+/// The fixed catalogue of actions the system can perform.
+///
+/// Tenants cannot invent permissions, because a permission corresponds to a
+/// code path and tenants do not write code. This table is reference data
+/// maintained by migration — the one deliberate exception to "no seed data" —
+/// so that access_role_permission can carry a real foreign key instead of
+/// unvalidated strings.
+model Permission {
+  key         String @id
+  category    String
+  description String
+
+  accessRoles AccessRolePermission[]
+
+  @@index([category])
+  @@map("permission")
+}
+
+/// A tenant-defined, named bundle of Permissions (TAXONOMY.md §4).
+///
+/// DELIBERATELY SEPARATE from the domain `Role` entity, which is scheduling
+/// vocabulary (Lecturer, Student, Auditor — TAXONOMY.md §2). The taxonomy uses
+/// the word "role" for both concepts, but they are not the same thing:
+/// `offering.required_role_id` means "this Offering needs a Lecturer", and if
+/// permission bundles lived on that entity the schema would happily accept an
+/// Offering requiring a lecturer with the role "Billing Admin". Keeping them
+/// apart keeps that state unrepresentable.
+model AccessRole {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+
+  key         String
+  name        String
+  description String?
+
+  /// True for `tenant-admin`, created by provisioning and not deletable.
+  isSystem Boolean @default(false) @map("is_system")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  permissions AccessRolePermission[]
+  people      PersonAccessRole[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("access_role")
+}
+
+/// AccessRole ↔ Permission.
+model AccessRolePermission {
+  accessRoleId  String @map("access_role_id")
+  permissionKey String @map("permission_key")
+  tenantId      String @map("tenant_id")
+
+  accessRole AccessRole @relation(fields: [accessRoleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionKey], references: [key], onDelete: Cascade)
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([accessRoleId, permissionKey])
+  @@index([permissionKey])
+  @@index([tenantId])
+  @@map("access_role_permission")
+}
+
+/// Person ↔ AccessRole. What a person may DO, as opposed to what they ARE.
+model PersonAccessRole {
+  personId     String   @map("person_id")
+  accessRoleId String   @map("access_role_id")
+  tenantId     String   @map("tenant_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  person     Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+  accessRole AccessRole @relation(fields: [accessRoleId], references: [id], onDelete: Cascade)
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([personId, accessRoleId])
+  @@index([accessRoleId])
+  @@index([tenantId])
+  @@map("person_access_role")
 }

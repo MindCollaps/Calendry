@@ -1,0 +1,43 @@
+// Sizing design tokens.
+//
+// This file holds ALIASES ONLY and is prepended to every SCSS file via
+// nuxt.config's additionalData — so it must emit no CSS. The :root declaration
+// that defines these properties lives once in layout.scss; putting it here
+// would duplicate the whole block into every component stylesheet.
+//
+// EMISSION: static, unlike color. Colors are written per-request by
+// `useLayout()` because they genuinely change with the active theme; these do
+// not, so re-emitting them on every render would be waste. Both land as custom
+// properties on :root, so nothing consuming them can tell which mechanism
+// produced it — and if a future compact/density mode needs to override sizing
+// per theme, the same useHead path layers over these defaults with no change
+// to any consumer.
+//
+// SCALE: derived from what the codebase actually used, not invented. Font sizes
+// spanned 14 distinct values, radii 5, spacing 14 — the signature of no scale
+// at all. Each token below states the values it replaces.
+
+
+// SCSS aliases resolve to the same custom properties rather than duplicating
+// the literals, so there is exactly one source of truth. Use either form:
+// `font-size: $fontSizeMd` and `font-size: var(--font-size-md)` are identical.
+$fontSizeXs: var(--font-size-xs);
+$fontSizeSm: var(--font-size-sm);
+$fontSizeMd: var(--font-size-md);
+$fontSizeLg: var(--font-size-lg);
+$fontSizeXl: var(--font-size-xl);
+$fontSize2Xl: var(--font-size-2xl);
+
+$radiusSm: var(--radius-sm);
+$radiusMd: var(--radius-md);
+$radiusLg: var(--radius-lg);
+$radiusXl: var(--radius-xl);
+
+$space1: var(--space-1);
+$space2: var(--space-2);
+$space3: var(--space-3);
+$space4: var(--space-4);
+$space5: var(--space-5);
+$space6: var(--space-6);
+$space7: var(--space-7);
+$space8: var(--space-8);

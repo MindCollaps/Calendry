@@ -13,16 +13,51 @@ html, body {
     font-optical-sizing: auto;
     font-weight: 400;
     font-style: normal;
-    color: $lightgray150;
+    color: $content4;
     text-size-adjust: 100%;
 
-    background: $darkgray950;
+    background: $surface1;
 }
 
 *,
 *::before,
 *::after {
-    scrollbar-color: $darkgray800 var(--bg-color, $darkgray1000);
+    scrollbar-color: $surface5 var(--bg-color, $surface0);
     scrollbar-width: thin;
     box-sizing: border-box;
+}
+// Browser surfaces we did not draw still carry the design: without these the
+// selection highlight and default focus ring ship in the user agent's blue,
+// which belongs to no design system.
+::selection {
+    color: $content0;
+    background: rgba(124, 89, 188, 0.45);
+}
+
+:focus-visible {
+    outline: 2px solid $primary400;
+    outline-offset: var(--space-1);
+}
+
+// Honour a reduced-motion preference everywhere rather than per-component.
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+    }
+}
+
+// Tell the browser which ground it is painting on. Without this, native
+// surfaces we do not draw — form controls, the default scrollbar rendering,
+// spellcheck underlines — keep the user agent's own light/dark assumption and
+// can end up dark-on-light or the reverse. It follows the theme class the
+// layout composable sets on <html>.
+:root {
+    color-scheme: light;
+}
+
+.theme-dark {
+    color-scheme: dark;
 }

@@ -11,7 +11,7 @@ CREATE TYPE "generation_source" AS ENUM ('SOLVER', 'MANUAL_BASELINE', 'IMPORT');
 CREATE TYPE "generation_status" AS ENUM ('PENDING', 'RUNNING', 'READY', 'APPLIED', 'FAILED', 'SUPERSEDED', 'INFEASIBLE');
 
 -- CreateEnum
-CREATE TYPE "session_event_type" AS ENUM ('CREATE', 'MOVE', 'SWAP', 'DELETE', 'LOCK', 'UNLOCK');
+CREATE TYPE "session_event_type" AS ENUM ('CREATE', 'MOVE', 'SWAP', 'DELETE', 'LOCK', 'UNLOCK', 'APPLY_GENERATION');
 
 -- CreateEnum
 CREATE TYPE "constraint_severity" AS ENUM ('HARD', 'SOFT');
@@ -398,6 +398,86 @@ CREATE TABLE "constraint_violation" (
     CONSTRAINT "constraint_violation_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "account" (
+    "id" TEXT NOT NULL,
+    "email" TEXT NOT NULL,
+    "password_hash" TEXT NOT NULL,
+    "is_active" BOOLEAN NOT NULL DEFAULT true,
+    "must_change_password" BOOLEAN NOT NULL DEFAULT false,
+    "last_login_at" TIMESTAMPTZ(3),
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(3) NOT NULL,
+
+    CONSTRAINT "account_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "account_person" (
+    "account_id" TEXT NOT NULL,
+    "person_id" TEXT NOT NULL,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "account_person_pkey" PRIMARY KEY ("account_id","person_id")
+);
+
+-- CreateTable
+CREATE TABLE "auth_session" (
+    "id" TEXT NOT NULL,
+    "account_id" TEXT NOT NULL,
+    "active_person_id" TEXT,
+    "token_hash" TEXT NOT NULL,
+    "expires_at" TIMESTAMPTZ(3) NOT NULL,
+    "revoked_at" TIMESTAMPTZ(3),
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "user_agent" TEXT,
+    "ip_address" TEXT,
+
+    CONSTRAINT "auth_session_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "permission" (
+    "key" TEXT NOT NULL,
+    "category" TEXT NOT NULL,
+    "description" TEXT NOT NULL,
+
+    CONSTRAINT "permission_pkey" PRIMARY KEY ("key")
+);
+
+-- CreateTable
+CREATE TABLE "access_role" (
+    "id" TEXT NOT NULL,
+    "tenant_id" TEXT NOT NULL,
+    "key" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+    "is_system" BOOLEAN NOT NULL DEFAULT false,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(3) NOT NULL,
+
+    CONSTRAINT "access_role_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "access_role_permission" (
+    "access_role_id" TEXT NOT NULL,
+    "permission_key" TEXT NOT NULL,
+    "tenant_id" TEXT NOT NULL,
+
+    CONSTRAINT "access_role_permission_pkey" PRIMARY KEY ("access_role_id","permission_key")
+);
+
+-- CreateTable
+CREATE TABLE "person_access_role" (
+    "person_id" TEXT NOT NULL,
+    "access_role_id" TEXT NOT NULL,
+    "tenant_id" TEXT NOT NULL,
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "person_access_role_pkey" PRIMARY KEY ("person_id","access_role_id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "federation_slug_key" ON "federation"("slug");
 
@@ -598,6 +678,42 @@ CREATE INDEX "constraint_violation_session_id_idx" ON "constraint_violation"("se
 
 -- CreateIndex
 CREATE UNIQUE INDEX "constraint_violation_constraint_id_session_id_key" ON "constraint_violation"("constraint_id", "session_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "account_email_key" ON "account"("email");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "account_person_person_id_key" ON "account_person"("person_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "auth_session_token_hash_key" ON "auth_session"("token_hash");
+
+-- CreateIndex
+CREATE INDEX "auth_session_account_id_idx" ON "auth_session"("account_id");
+
+-- CreateIndex
+CREATE INDEX "auth_session_active_person_id_idx" ON "auth_session"("active_person_id");
+
+-- CreateIndex
+CREATE INDEX "permission_category_idx" ON "permission"("category");
+
+-- CreateIndex
+CREATE INDEX "access_role_tenant_id_idx" ON "access_role"("tenant_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "access_role_tenant_id_key_key" ON "access_role"("tenant_id", "key");
+
+-- CreateIndex
+CREATE INDEX "access_role_permission_permission_key_idx" ON "access_role_permission"("permission_key");
+
+-- CreateIndex
+CREATE INDEX "access_role_permission_tenant_id_idx" ON "access_role_permission"("tenant_id");
+
+-- CreateIndex
+CREATE INDEX "person_access_role_access_role_id_idx" ON "person_access_role"("access_role_id");
+
+-- CreateIndex
+CREATE INDEX "person_access_role_tenant_id_idx" ON "person_access_role"("tenant_id");
 
 -- AddForeignKey
 ALTER TABLE "tenant" ADD CONSTRAINT "tenant_federation_id_fkey" FOREIGN KEY ("federation_id") REFERENCES "federation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -826,4 +942,37 @@ ALTER TABLE "constraint_violation" ADD CONSTRAINT "constraint_violation_detected
 
 -- AddForeignKey
 ALTER TABLE "constraint_violation" ADD CONSTRAINT "constraint_violation_generation_id_fkey" FOREIGN KEY ("generation_id") REFERENCES "generation"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "account_person" ADD CONSTRAINT "account_person_account_id_fkey" FOREIGN KEY ("account_id") REFERENCES "account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "account_person" ADD CONSTRAINT "account_person_person_id_fkey" FOREIGN KEY ("person_id") REFERENCES "person"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "auth_session" ADD CONSTRAINT "auth_session_account_id_fkey" FOREIGN KEY ("account_id") REFERENCES "account"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "auth_session" ADD CONSTRAINT "auth_session_active_person_id_fkey" FOREIGN KEY ("active_person_id") REFERENCES "person"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "access_role" ADD CONSTRAINT "access_role_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "access_role_permission" ADD CONSTRAINT "access_role_permission_access_role_id_fkey" FOREIGN KEY ("access_role_id") REFERENCES "access_role"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "access_role_permission" ADD CONSTRAINT "access_role_permission_permission_key_fkey" FOREIGN KEY ("permission_key") REFERENCES "permission"("key") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "access_role_permission" ADD CONSTRAINT "access_role_permission_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "person_access_role" ADD CONSTRAINT "person_access_role_person_id_fkey" FOREIGN KEY ("person_id") REFERENCES "person"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "person_access_role" ADD CONSTRAINT "person_access_role_access_role_id_fkey" FOREIGN KEY ("access_role_id") REFERENCES "access_role"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "person_access_role" ADD CONSTRAINT "person_access_role_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 

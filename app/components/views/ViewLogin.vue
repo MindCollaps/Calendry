@@ -2,20 +2,21 @@
     <template v-if="ready">
         <div class="btn-wrap">
             <common-button
-            v-if="!store.me?.loggedIn"
-            to="/login"
-        >Login</common-button>
-        <common-button
-            v-else-if="store.me?.loggedIn"
-            icon-width="45px"
-            to="/profile"
-        >
-            <template #default>
-                <div class="loggedin-view">
-                    {{ store.me?.username }}
-                </div>
-            </template>
-        </common-button>
+                v-if="!signedIn"
+                to="/login"
+            >Sign in</common-button>
+            <common-button
+                v-else
+                icon-width="45px"
+                type="secondary"
+                @click="logout"
+            >
+                <template #default>
+                    <div class="loggedin-view">
+                        {{ displayName }}
+                    </div>
+                </template>
+            </common-button>
         </div>
     </template>
     <template v-else>
@@ -24,11 +25,28 @@
 </template>
 
 <script setup lang="ts">
-import { useStore } from '~/store';
 import { ready } from '~/composables/layout';
+import { logout, useIsSignedIn, useSession } from '~/composables/session';
 import CommonLoader from '../common/CommonLoader.vue';
 
-const store = useStore();
+/**
+ * Header widget, not the login form itself — that lives at /login.
+ *
+ * Reads the real session rather than the WebUser template stub, which is now
+ * referenced only by the navigation composable and is still slated for removal
+ * (see CLAUDE.md).
+ *
+ * The signed-in button was previously a link to /profile; there is no profile
+ * page, so it signs out instead. Point it back at /profile when one exists.
+ */
+const session = useSession();
+const signedIn = useIsSignedIn();
+
+const displayName = computed(() => {
+    const person = session.value?.activePerson;
+
+    return person ? `${person.givenName} ${person.familyName}` : 'Sign out';
+});
 </script>
 
 <style scoped lang="scss">
@@ -41,7 +59,7 @@ const store = useStore();
     height: 22px;
     border-radius: 50%;
 
-    color: $lightgray0;
+    color: $content0;
 
     background: $warning600;
 }

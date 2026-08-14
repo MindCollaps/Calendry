@@ -21,6 +21,7 @@ export default defineNuxtConfig({
             websocket: true,
         },
     },
+    css: ['~/scss/tokens-root.scss'],
     compatibilityDate: '2026-01-01',
     devtools: { enabled: true },
     modules: [
@@ -46,7 +47,7 @@ export default defineNuxtConfig({
             preprocessorMaxWorkers: true,
             preprocessorOptions: {
                 scss: {
-                    additionalData: `@use "~/scss/colors.scss" as *;@use "~/scss/variables.scss" as *;`,
+                    additionalData: `@use "~/scss/colors.scss" as *;@use "~/scss/variables.scss" as *;@use "~/scss/tokens.scss" as *;`,
                 },
             },
         },

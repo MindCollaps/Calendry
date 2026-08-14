@@ -90,7 +90,7 @@ const headerMenu = computed(() => {
                     .header__menu_btn-container {
                         border-bottom-right-radius: 0 !important;
                         border-bottom-left-radius: 0 !important;
-                        background: $darkgray800 !important;
+                        background: $surface5 !important;
                     }
 
                     .header__menu_btn_children_menu {
@@ -131,7 +131,7 @@ const headerMenu = computed(() => {
 
                 visibility: hidden;
                 opacity: 0;
-                background: $darkgray900;
+                background: $surface2;
 
                 transition: 0.3s;
             }

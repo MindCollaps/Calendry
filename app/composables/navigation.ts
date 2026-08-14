@@ -26,7 +26,7 @@ export const useHeaderMenu = () => computed<HeaderItem[]>(() => {
             text: 'Wordlist',
             path: '/wordlist',
             icon: 'material-symbols:menu-book',
-            hide: !(store.me?.admin || store.me?.developer),
+            hide: !store.me?.isAdmin,
         },
     ];
 

@@ -61,7 +61,7 @@ const toastIcon = {
         padding: 16px 20px;
         border-radius: 8px;
 
-        background: $lightgray50;
+        background: $content1;
         box-shadow: 2px 2px 2px rgb(0 0 0 / 25%);
 
         &-header {
@@ -74,7 +74,7 @@ const toastIcon = {
             flex: 1;
             font-size: 14px;
             font-weight: 600;
-            color: $darkgray900;
+            color: $surface2;
         }
 
         &-icon {
@@ -112,7 +112,7 @@ const toastIcon = {
             font-size: 24px;
             font-weight: 300;
             line-height: 1;
-            color: $darkgray700;
+            color: $surface6;
 
             opacity: 0.7;
 
@@ -129,7 +129,7 @@ const toastIcon = {
             margin-top: 8px;
             padding-left: 36px;
             font-size: 14px;
-            color: $darkgray800;
+            color: $surface5;
         }
     }
 

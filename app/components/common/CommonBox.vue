@@ -26,10 +26,10 @@ defineSlots<{
 
         min-width: 50vmax;
         padding: 32px;
-        border: 1px solid $darkgray600;
+        border: 1px solid $surface7;
         border-radius: 8px;
 
-        background-color: $darkgray800;
+        background-color: $surface5;
 
         @include mobile {
             min-width: 90vw;

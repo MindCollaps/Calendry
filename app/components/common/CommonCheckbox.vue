@@ -54,7 +54,7 @@ const checked = defineModel({ type: Boolean, required: true });
 
         width: 16px;
         height: 16px;
-        border: 1px solid $lightgray100;
+        border: 1px solid $content2;
         border-radius: 4px;
 
         transition: 0.3s;
@@ -73,7 +73,7 @@ const checked = defineModel({ type: Boolean, required: true });
 
             svg {
                 transform: scale(1);
-                color: $lightgray150Orig;
+                color: $content4Orig;
             }
         }
     }

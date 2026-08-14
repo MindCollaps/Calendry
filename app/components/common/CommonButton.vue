@@ -29,13 +29,12 @@
         >
             <slot name="icon"/>
         </div>
-        <ui-text
+        <span
             v-if="$slots.default"
             class="button_content"
-            type="2b"
         >
             <slot name="default"/>
-        </ui-text>
+        </span>
         <div
             v-if="$slots.append"
             class="button_append"
@@ -46,6 +45,11 @@
 </template>
 
 <script setup lang="ts">
+// The label wrapper was <ui-text type="2b">, but no UiText component exists in
+// this repo — it was never ported from the source template, so Vue could not
+// resolve it and logged a warning for every button with a label. Styling is
+// keyed on the .button_content class rather than the tag, so a span is a
+// drop-in replacement. Restore a typography component here if one is added.
 import type { PropType } from 'vue';
 import type { RouteLocationRaw } from 'vue-router';
 import { NuxtLink } from '#components';
@@ -64,7 +68,11 @@ const props = defineProps({
         default: '16px',
     },
     type: {
-        type: String as PropType<'primary' | 'secondary' | 'secondary-black' | 'destructive' | 'link'>,
+        // NOTE: 'transparent' and 'secondary-875' are accepted because existing
+        // callers pass them, but this component has no styles for either — they
+        // render with an unstyled button--type-* class. Either add the SCSS or
+        // migrate those callers to a implemented variant.
+        type: String as PropType<'primary' | 'secondary' | 'secondary-black' | 'secondary-875' | 'destructive' | 'link' | 'transparent'>,
         default: 'primary',
     },
     orientation: {
@@ -97,7 +105,7 @@ const props = defineProps({
     },
     linkColor: {
         type: String as PropType<ColorsList>,
-        default: 'lightGray200',
+        default: 'content5',
     },
     hoverColor: {
         type: String as PropType<ColorsList | null>,
@@ -213,15 +221,15 @@ const getAttrs = computed(() => {
     }
 
     &--type-secondary-black {
-        background: var(--primary-color, $darkgray700);
+        background: var(--primary-color, $surface6);
 
         @include hover {
             &:hover {
-                background: var(--hover-color, $darkgray600);
+                background: var(--hover-color, $surface7);
             }
 
             &:active, &:focus {
-                background: var(--focus-color, $lightgray400);
+                background: var(--focus-color, $content7);
             }
         }
     }

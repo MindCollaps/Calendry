@@ -4,6 +4,7 @@
 .nuxt
 .nitro
 .cache
+.bun
 dist
 
 # Node dependencies
@@ -25,3 +26,9 @@ logs
 
 # Local dev Postgres data directory (docker-compose.dev.yml)
 /db/
+
+# Agent / skill tooling artifacts
+/.agents/
+/.claude/
+/.impeccable/
+/skills-lock.json

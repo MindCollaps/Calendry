@@ -29,8 +29,15 @@ ADMIN_EMAIL=john.smith@example.com
 # Runtime connection — app role, RLS applies.
 DATABASE_URL=postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@db:5432/${POSTGRES_DB}
 
-# Migration connection — owner role, Prisma CLI only.
+# Runtime role from outside the compose network, for host-run tooling.
+DATABASE_URL_HOST=postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@localhost:55432/${POSTGRES_DB}
+
+# Migration connection — owner role, Prisma CLI only. Container-internal.
 MIGRATION_DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+
+# Same database from outside the compose network, for host-run tooling
+# (Prisma CLI, integration tests, provision:tenant).
+MIGRATION_DATABASE_URL_HOST=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:55432/${POSTGRES_DB}
 
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_DB=${POSTGRES_DB}

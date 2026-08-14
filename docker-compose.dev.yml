@@ -3,6 +3,12 @@ services:
     build:
       context: .
       dockerfile: .config/Dockerfile.dev
+    # The working tree is bind-mounted read-write below, so anything this
+    # container writes (.nuxt, .output, node_modules) lands in the repo with the
+    # container's ownership. Running as root therefore leaves root-owned build
+    # artifacts that break every subsequent host-side command with EACCES.
+    # `bun run dev` already exports UID/GID for this; nothing consumed them.
+    user: "${UID:-1000}:${GID:-1000}"
     environment:
       - NODE_ENV=development
       - PORT=3000
@@ -22,6 +28,13 @@ services:
     # Must match docker-compose.yml — dev and prod on different major versions
     # means migrations are verified against something production never runs.
     image: 'postgres:18.1-alpine'
+    # Published for HOST-side tooling only: the Prisma CLI, the integration
+    # tests and `provision:tenant` all run outside the compose network, where
+    # the `db` hostname does not resolve. Deliberately not 5432, so this cannot
+    # collide with a Postgres already installed on the machine. Dev only — the
+    # production compose file exposes nothing.
+    ports:
+      - "55432:5432"
     volumes:
       - ./db/:/var/lib/postgresql/18/docker:rw
       # Compose replaces volume lists rather than merging them, so the runtime

@@ -125,13 +125,13 @@ defineExpose({
         border: 2px solid transparent;
         border-radius: 8px;
 
-        background: $darkgray900;
+        background: $surface2;
 
         transition: 0.3s;
 
         @include hover {
             &:hover {
-                border-color: $darkgray800;
+                border-color: $surface5;
             }
         }
     }
@@ -158,7 +158,7 @@ defineExpose({
             font-family: $defaultFont;
             font-size: 13px;
             font-weight: 600;
-            color:$lightgray150;
+            color:$content4;
 
             appearance: none;
             background: none;
@@ -170,7 +170,7 @@ defineExpose({
             }
 
             &::placeholder {
-                color: vartorgba('lightgray150', 0.5);
+                color: vartorgba('content4', 0.5);
                 opacity: 1
             }
         }
@@ -181,7 +181,7 @@ defineExpose({
         margin-bottom: 10px;
 
         font-size: 11px;
-        color: $lightgray400;
+        color: $content7;
         text-align: right;
 
         &--exceeded {

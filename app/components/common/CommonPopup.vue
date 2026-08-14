@@ -112,7 +112,7 @@ defineSlots<{
     &-content {
         padding: 32px;
         border-radius: 8px;
-        background: $darkgray950;
+        background: $surface1;
     }
 
     &-control {
