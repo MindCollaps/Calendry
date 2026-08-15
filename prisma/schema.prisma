@@ -444,6 +444,11 @@ model TimeGrid {
   /// Minutes between consecutive blocks.
   breakMinutes Int @default(0) @map("break_minutes")
 
+  /// At most one per tenant, enforced by the partial unique index
+  /// `time_grid_one_default_per_tenant` in migration
+  /// 20260814120000_time_grid_single_default. Prisma cannot express a partial
+  /// unique index, so it exists in SQL only — `prisma migrate dev` will offer to
+  /// drop it as "drift". Do not let it (see CLAUDE.md).
   isDefault Boolean  @default(false) @map("is_default")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)

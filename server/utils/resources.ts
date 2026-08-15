@@ -21,6 +21,28 @@ export interface ResourceConfig {
     /** Default ordering for list responses. */
     orderBy: Record<string, 'asc' | 'desc'>;
     /**
+     * Text columns the `q` list parameter searches, case-insensitively.
+     *
+     * An explicit allowlist rather than "every string column": `q` reaches the
+     * database as a filter, and letting the client choose the column is how a
+     * search box turns into an enumeration tool for fields no screen shows.
+     */
+    searchFields?: string[];
+    /**
+     * A boolean column of which at most one row per tenant may be true.
+     *
+     * Setting it demotes every sibling in the same transaction, because "make
+     * this the default" means "and not the others" — that is one intent, not
+     * two. Without this, the partial unique index backing the rule turns an
+     * ordinary promotion into a 409 that tells the user to go and un-set the
+     * other one first.
+     *
+     * Declared here rather than special-cased in the route so the behaviour is
+     * visible next to the entity it applies to, and so the next exclusive flag
+     * is a one-line change instead of a second branch.
+     */
+    exclusiveFlag?: string;
+    /**
      * True for entities a Federation can own (TAXONOMY.md §2). Reads may return
      * federation-owned rows, so list queries must not blindly filter
      * `tenant_id = x` or shared resources vanish.
@@ -55,6 +77,7 @@ export const RESOURCES: Record<string, ResourceConfig> = {
             email: z.string().optional(),
         }),
         orderBy: { familyName: 'asc' },
+        searchFields: ['givenName', 'familyName', 'email', 'externalRef'],
     },
 
     roles: {
@@ -70,6 +93,7 @@ export const RESOURCES: Record<string, ResourceConfig> = {
         }),
         filters: z.object({ key: z.string().optional() }),
         orderBy: { key: 'asc' },
+        searchFields: ['key', 'name', 'description'],
     },
 
     groups: {
@@ -90,6 +114,7 @@ export const RESOURCES: Record<string, ResourceConfig> = {
         }),
         filters: z.object({ parentGroupId: z.string().optional() }),
         orderBy: { name: 'asc' },
+        searchFields: ['name', 'description'],
     },
 
     rooms: {
@@ -119,6 +144,7 @@ export const RESOURCES: Record<string, ResourceConfig> = {
             minCapacity: z.coerce.number().int().optional(),
         }),
         orderBy: { code: 'asc' },
+        searchFields: ['code', 'name', 'location'],
     },
 
     equipment: {
@@ -135,6 +161,7 @@ export const RESOURCES: Record<string, ResourceConfig> = {
         }),
         filters: z.object({ key: z.string().optional() }),
         orderBy: { key: 'asc' },
+        searchFields: ['key', 'name', 'description'],
     },
 
     offerings: {
@@ -169,10 +196,15 @@ export const RESOURCES: Record<string, ResourceConfig> = {
             isActive: z.coerce.boolean().optional(),
         }),
         orderBy: { title: 'asc' },
+        searchFields: ['title', 'code', 'notes'],
     },
 
     'time-grids': {
         model: 'timeGrid',
+        // Backed by the partial unique index time_grid_one_default_per_tenant
+        // (migration 20260814120000). The index is the guarantee; this is what
+        // makes promoting a grid an ordinary action rather than a 409.
+        exclusiveFlag: 'isDefault',
         create: z.object({
             name: z.string().min(1),
             blockLengthMinutes: z.number().int().min(1),
@@ -195,6 +227,7 @@ export const RESOURCES: Record<string, ResourceConfig> = {
         }),
         filters: z.object({ isDefault: z.coerce.boolean().optional() }),
         orderBy: { name: 'asc' },
+        searchFields: ['name'],
     },
 
     terms: {
@@ -213,6 +246,7 @@ export const RESOURCES: Record<string, ResourceConfig> = {
         }),
         filters: z.object({}),
         orderBy: { startDate: 'desc' },
+        searchFields: ['name'],
     },
 
     constraints: {
@@ -240,8 +274,68 @@ export const RESOURCES: Record<string, ResourceConfig> = {
             isEnabled: z.coerce.boolean().optional(),
         }),
         orderBy: { type: 'asc' },
+        searchFields: ['type', 'name'],
+    },
+
+    'session-kinds': {
+        model: 'sessionKind',
+        create: z.object({
+            key: z.string().min(1),
+            name: z.string().min(1),
+            // Free-form so a tenant is not boxed into a palette we chose. The
+            // schedule chip falls back to a neutral tint when this is null.
+            color: z.string().nullish(),
+            // Lets the API reject a Group-scoped constraint aimed at a kind that
+            // carries no Groups (TAXONOMY.md §9.5).
+            requiresGroup: z.boolean().optional(),
+        }),
+        update: z.object({
+            name: z.string().min(1).optional(),
+            color: z.string().nullish(),
+            requiresGroup: z.boolean().optional(),
+        }),
+        filters: z.object({ key: z.string().optional() }),
+        orderBy: { key: 'asc' },
+        searchFields: ['key', 'name'],
     },
 };
+
+/**
+ * Demotes every other row holding an exclusive flag, when the incoming body
+ * sets it.
+ *
+ * Runs INSIDE the caller's transaction, immediately before the write, so the
+ * moment where two rows hold the flag is never observable and a failed write
+ * leaves nothing demoted.
+ *
+ * Only ever demotes — it never promotes, and it does nothing at all when the
+ * body does not set the flag to true. Clearing the flag on the last remaining
+ * default is therefore allowed: "no default" is a legitimate state (a Term can
+ * always name its grid explicitly), and silently refusing to un-set it would be
+ * this function inventing a rule the schema does not have.
+ */
+export async function demoteExclusiveSiblings(
+    tx: Tx,
+    config: ResourceConfig,
+    tenantId: string,
+    body: Record<string, unknown>,
+    exceptId?: string,
+): Promise<void> {
+    const flag = config.exclusiveFlag;
+
+    if (!flag || body[flag] !== true) {
+        return;
+    }
+
+    await delegate(tx, config.model).updateMany({
+        where: {
+            tenantId,
+            [flag]: true,
+            ...(exceptId ? { NOT: { id: exceptId } } : {}),
+        },
+        data: { [flag]: false },
+    });
+}
 
 export function getResource(name: string | undefined): ResourceConfig {
     const config = name ? RESOURCES[name] : undefined;
@@ -267,6 +361,7 @@ export function delegate(tx: Tx, model: string) {
 
     return d as {
         findMany: (args: unknown) => Promise<unknown[]>;
+        count: (args: unknown) => Promise<number>;
         findFirst: (args: unknown) => Promise<unknown>;
         create: (args: unknown) => Promise<unknown>;
         update: (args: unknown) => Promise<unknown>;

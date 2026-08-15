@@ -1,19 +1,58 @@
 import { useStore } from '~/store/index';
 
-const store = useStore();
+/**
+ * The store is resolved LAZILY, never at module scope.
+ *
+ * A module-level `const store = useStore()` runs the moment anything imports
+ * this file. That happened to work while the only importer was `default.vue`,
+ * which Nuxt evaluates after installing Pinia — but the instant a second module
+ * imported it from an earlier point in the request (the nav registry, reached
+ * from route middleware), SSR died with `getActivePinia() was called but there
+ * was no active Pinia`. Pinia's own message said "This will fail in production".
+ *
+ * `computed` is lazy, so `ready` still evaluates inside whichever component
+ * reads it, where Pinia is active.
+ */
+export const ready = computed(() => useStore().ready);
 
-export const ready = computed(() => {
-    return store.ready;
+/**
+ * The theme cookie, as one definition rather than two.
+ *
+ * `useCookie` needs the Nuxt instance, so anything that wants to *change* the
+ * theme has to take this ref at setup time and close over it — calling it from
+ * inside a click handler is the "composable called outside a setup function"
+ * trap again.
+ */
+export const useThemeCookie = () => useCookie<ThemesList>('theme', {
+    path: '/',
+    sameSite: 'lax',
+    secure: true,
+    maxAge: 60 * 60 * 24 * 360,
 });
 
+/**
+ * Flips between the light base and the dark theme, writing both the cookie
+ * (which survives reload) and the store (which `useHead` reads to emit the
+ * custom properties). Writing only one of them produces a page whose colours
+ * and whose `theme-*` class disagree.
+ */
+export function useThemeToggle() {
+    const themeCookie = useThemeCookie();
+    const store = useStore();
+
+    return () => {
+        const next: ThemesList = store.theme === 'dark' ? 'default' : 'dark';
+
+        themeCookie.value = next;
+        store.theme = next;
+    };
+}
+
 export const useLayout = () => {
+    const store = useStore();
+
     // Theme handling
-    const themeCookie = useCookie<ThemesList>('theme', {
-        path: '/',
-        sameSite: 'lax',
-        secure: true,
-        maxAge: 60 * 60 * 24 * 360,
-    });
+    const themeCookie = useThemeCookie();
 
     // Reactive theme reference
     store.theme = themeCookie.value ?? 'default';
@@ -80,6 +119,8 @@ export const useLayout = () => {
 
 
 function setWindowStore() {
+    const store = useStore();
+
     store.isMobile = window.innerWidth < 700;
     store.isMobileOrTablet = window.innerWidth < 1466;
     store.isTablet = window.innerWidth < 1466 && window.innerWidth >= 700;

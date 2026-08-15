@@ -1,4 +1,6 @@
 import type { Prisma } from '@prisma/client';
+import { STRUCTURAL_CONSTRAINT_TYPES } from '#shared/constraintTypes';
+import type { StructuralConstraintType } from '#shared/constraintTypes';
 import type { Tx } from './tenantDb';
 import { conflictGroupIds } from './groupClosure';
 
@@ -21,34 +23,19 @@ import { conflictGroupIds } from './groupClosure';
  * provisioning is responsible for creating the baseline hard constraints.
  */
 
-/** Structural types this evaluator can decide without the solver. */
-export const STRUCTURAL_CONSTRAINT_TYPES = [
-    'no_double_booking_room',
-    'no_double_booking_lecturer',
-    'no_double_booking_group',
-] as const;
-
-export type StructuralConstraintType = (typeof STRUCTURAL_CONSTRAINT_TYPES)[number];
-
 /**
- * Constraint types owned by the solver service (TAXONOMY.md §7). Listed so the
- * boundary is explicit and a missing check is visibly deferred rather than
- * forgotten.
+ * The two type lists moved to `shared/constraintTypes.ts` in Step 13, so the
+ * rule-builder UI and this evaluator read ONE declaration. A type the builder
+ * offered but this file did not know would be a constraint a tenant can enable,
+ * that reports nothing, and that means nothing.
+ *
+ * Re-exported here so every existing importer keeps working unchanged.
  */
-export const SOLVER_OWNED_CONSTRAINT_TYPES = [
-    // Hard
-    'exact_frequency_per_offering', // TODO(solver): needs full Offering demand view
-    'lecturer_veto', // TODO(solver): parameterised day/slot blackout
-    'online_onsite_same_day_exclusion', // TODO(solver): per-Group day aggregation
-    'max_online_ratio_per_group', // TODO(solver): ratio over a whole term
-    // Soft
-    'minimize_first_block', // TODO(solver): penalty scoring
-    'minimize_last_block',
-    'minimize_saturday',
-    'minimize_high_ranking_rooms',
-    'minimize_exam_week_sessions',
-    'minimize_online_sessions',
-] as const;
+export {
+    STRUCTURAL_CONSTRAINT_TYPES,
+    SOLVER_OWNED_CONSTRAINT_TYPES,
+} from '#shared/constraintTypes';
+export type { StructuralConstraintType } from '#shared/constraintTypes';
 
 interface PlacedSession {
     id: string;

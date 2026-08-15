@@ -35,6 +35,29 @@ Everything below is tagged **[FIXED]** or **[OPEN]** accordingly.
 - **`Equipment` / `Feature`** [OPEN, tenant-defined] — tags on a Room (projector, PC lab, lab bench, etc.), referenced by Offerings that require them.
 - Online delivery is modeled as a **virtual Room** (per prototype's `raum_online` pattern), not a separate boolean flag — keeps room-assignment logic uniform.
 
+### Federation-shared events — amendment (decided later, see solver decision record §10)
+
+`Session` is now a **third federation-shareable entity**, alongside `Room`
+and `Offering` — the exception is no longer limited to two tables.
+Reasoning: a genuinely shared event spanning multiple tenants (e.g. a
+university-wide celebration when Technology and Medicine are separate
+tenants under one Federation) is one event, not a coincidence of two
+identical events each tenant independently tracks. `Session` gets the
+same `tenant_id`/`federation_id` nullable pair + `CHECK` exactly one is
+set + RLS predicate (`tenant_id = current_tenant() OR federation_id =
+current_federation()`) that `Room`/`Offering` already have.
+
+**Consequence needing follow-up implementation work** (app repo, not
+solver): the relation tables built in Step 13 (`session_group`,
+`session_person`, etc.) need their RLS extended to permit a
+federation-shared Session to reference Groups/Persons from *either*
+member tenant — they were only ever designed against the two-table
+exception and don't yet support this. Affected-person notification
+resolution also needs to walk Membership trees across both tenants for
+this specific case, not just one. Flag as a required schema/RLS
+amendment before shared-event Sessions can actually be created, not an
+automatic consequence of this decision alone.
+
 ### Scheduling — two-level model
 - **`Offering`** [FIXED] — the *demand* definition: "this needs to happen N times, needs a Lecturer with role X, a Group, a Room with equipment Y, kind Z." Roughly maps to the prototype's `lectures[lecture]` frequency concept. This is the solver's input.
 - **`Session`** [FIXED] — one atomic, placed instance: a specific week/timeslot/room/lecturer(s)/group(s). This is what gets displayed, moved, swapped, locked, exported, notified-about. Solver output (and manual edits) operate at this level.

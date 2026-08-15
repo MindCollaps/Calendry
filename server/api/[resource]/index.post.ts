@@ -1,5 +1,5 @@
 import { mapDbErrors } from '../../utils/dbErrors';
-import { delegate, getResource } from '../../utils/resources';
+import { delegate, demoteExclusiveSiblings, getResource } from '../../utils/resources';
 import { crudPermission } from '../../utils/permissions';
 import { requirePermission } from '../../utils/requirePermission';
 import { withRequestTenant } from '../../utils/tenantDb';
@@ -22,7 +22,14 @@ export default defineEventHandler(async (event) => {
         // policy only permits tenant-owned writes.
         const data = { ...(body as Record<string, unknown>), tenantId: identity.tenantId };
 
-        const created = await mapDbErrors(() => delegate(tx, config.model).create({ data }));
+        const created = await mapDbErrors(async () => {
+            // Creating a row that claims an exclusive flag demotes the incumbent,
+            // in this transaction. Without it, "create this as the default" is a
+            // 409 telling the user to go and edit a different row first.
+            await demoteExclusiveSiblings(tx, config, identity.tenantId, data);
+
+            return delegate(tx, config.model).create({ data });
+        });
 
         setResponseStatus(event, 201);
 

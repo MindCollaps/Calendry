@@ -1,141 +1,116 @@
 <template>
-    <div class="header__menu">
-        <div
-            v-for="button in headerMenu"
-            :key="button.text"
-            class="header__menu_btn-wrapper"
-            :class="{ 'header__menu_btn-wrapper--has-children': button.children }"
+    <nav
+        class="header__menu"
+        aria-label="Main"
+    >
+        <common-button
+            v-for="entry in headerNav"
+            :key="entry.id"
+            :icon="entry.icon"
+            :to="entry.to"
+            :type="entry.active ? 'primary' : 'secondary'"
+            @click="entry.run?.()"
         >
-            <common-button
-                class="header__menu_btn-container"
-                :disabled="button.disabled"
-                :icon="button.icon"
-                :to="button.path"
-                :type="button.active ? 'secondary-875' : 'secondary'"
-                :width="button.width"
-                @click="button.action?.()"
-            >
-                <div class="header__menu_btn">
-                    <div class="header__menu_btn_text">
-                        {{ button.text }}
-                    </div>
-                    <div
-                        v-if="button.children"
-                        class="header__menu_btn_children"
-                    >
-                        <Icon
-                            class="header__menu_btn_children_icon"
-                            name="material-symbols:arrow-drop-down-rounded"
-                        />
-                    </div>
-                </div>
-            </common-button>
-            <div
-                v-if="button.children"
-                class="header__menu_btn_children_menu"
-            >
-                <common-button
-                    v-for="childrenButton in button.children"
-                    :key="childrenButton.text"
-                    :disabled="childrenButton.disabled"
-                    :icon="childrenButton.icon"
-                    :to="childrenButton.path"
-                    :type="childrenButton.active ? 'primary' : 'secondary'"
-                    @click="childrenButton.action?.()"
-                >
-                    {{ childrenButton.text }}
-                </common-button>
-            </div>
-        </div>
-    </div>
+            {{ entry.label }}
+        </common-button>
+
+        <button
+            class="header__menu_search"
+            type="button"
+            aria-label="Search — Ctrl K"
+            @click="openPalette()"
+        >
+            <Icon
+                name="material-symbols:search"
+                aria-hidden="true"
+            />
+            <kbd>{{ shortcutLabel }}</kbd>
+        </button>
+    </nav>
 </template>
 
 <script setup lang="ts">
-import { useHeaderMenu } from '~/composables/navigation';
+import { useHeaderNav } from '~/composables/navigation';
 
-const headerMenu = computed(() => {
-    const menu = useHeaderMenu();
-    return menu.value.filter(x => {
-        return !(x.hide ?? false);
-    });
+/**
+ * Top-level navigation, driven by the permission-filtered nav registry.
+ *
+ * The previous version gated the one non-Home item on `store.me?.isAdmin` from
+ * the template's WebUser stub, and rendered a hover-dropdown for children that
+ * no entry ever had. Both are gone; entries come from `useHeaderNav()`.
+ *
+ * Active/inactive uses `primary`/`secondary` rather than the old
+ * `secondary-875`, which CommonButton accepts but has no styles for — one of
+ * the two callers of that unimplemented variant is now off it.
+ */
+const headerNav = useHeaderNav();
+
+// Opened by writing the shared state rather than calling into the palette
+// composable: that composable owns a keydown listener and an overlay claim, and
+// instantiating a second copy here would register both twice.
+const paletteOpen = useState('calendry.palette.open', () => false);
+
+function openPalette() {
+    paletteOpen.value = true;
+}
+
+// Cosmetic only; the handler accepts either modifier regardless of platform.
+const shortcutLabel = ref('Ctrl K');
+
+onMounted(() => {
+    if (navigator.platform.toLowerCase().includes('mac')) {
+        shortcutLabel.value = '⌘ K';
+    }
 });
 </script>
 
 <style scoped lang="scss">
 .header__menu {
     display: flex;
-    gap: 16px;
+    gap: var(--space-6);
     align-items: center;
     justify-content: center;
 
-    &_btn {
+    &_search {
+        cursor: pointer;
+
         display: flex;
-        gap: 8px;
+        gap: var(--space-3);
         align-items: center;
-        justify-content: space-between;
 
-        width: 100%;
+        padding: var(--space-3) var(--space-5);
+        border: 1px solid $surface4;
+        border-radius: var(--radius-lg);
 
-        text-align: left;
+        color: $content7;
 
-        &-container {
-            position: relative;
+        background: $surface1;
+
+        transition: 0.2s;
+
+        svg {
+            width: 16px;
+            height: 16px;
         }
 
-        &-wrapper {
-            position: relative;
+        kbd {
+            font-family: inherit;
+            font-size: var(--font-size-xs);
+            color: $surface7;
+        }
 
-            &--has-children {
-                &:hover {
-                    .header__menu_btn-container {
-                        border-bottom-right-radius: 0 !important;
-                        border-bottom-left-radius: 0 !important;
-                        background: $surface5 !important;
-                    }
-
-                    .header__menu_btn_children_menu {
-                        visibility: visible;
-                        opacity: 1;
-                    }
-
-                    .header__menu_btn_children_icon {
-                        transform: rotate(180deg);
-                    }
-                }
+        @include hover() {
+            &:hover {
+                border-color: $surface5;
+                color: $content4;
             }
         }
 
-        &_children {
-            display: flex;
-
-            &_icon {
-                transform: rotate(0);
-                width: 25px;
-                transition: 0.3s;
-            }
-
-            &_menu {
-                position: absolute;
-                z-index: 10;
-                top: calc(100% - 1px);
-                left: 0;
-
-                display: flex;
-                flex-direction: column;
-                gap: 8px;
-
-                width: 100%;
-                padding: 8px;
-                border-bottom-right-radius: 8px;
-                border-bottom-left-radius: 8px;
-
-                visibility: hidden;
-                opacity: 0;
-                background: $surface2;
-
-                transition: 0.3s;
-            }
+        &:focus-visible {
+            outline: 2px solid $primary400;
+            outline-offset: var(--space-1);
         }
+        @include mobile() { display: none; }
     }
 }
 </style>

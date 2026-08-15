@@ -197,6 +197,47 @@ third exception is a bug.
   request's headers. Corollary when designing empty states: if "no data" and
   "the fetch failed" render the same way, the bug is invisible — distinguish
   them.
+
+- **`--fix` tooling can rewrite files outside the current change's scope —
+  review the full diff for unexpectedly-touched files, not just the ones you
+  meant to change.** `stylelint --fix` and `eslint --fix` operate on whatever
+  their config globs match, which is the whole project, not your working set.
+
+  Concrete instance, Step 13: `bun run stylelint:fix` was run to clean up new
+  components and silently modified **8 files the step never touched** — five
+  schedule components, `schedule.vue`, `layout.scss` and `schedule-panel.scss`.
+  Most of it was harmless property reordering, but it also rewrote
+  `rgba(124, 89, 188, 0.55)` → `rgb(124, 89, 188, 0.55)` in `ScheduleGrid.vue`,
+  a *value* change inside the file whose grid placement had just been debugged.
+  It was caught by reading `git diff --name-only`, not by any check — build,
+  typecheck, eslint and all 45 tests passed with it in place.
+
+  Practical form: scope the fixer to your own paths
+  (`stylelint --fix 'app/components/manage/**/*.vue'`), and when you do run it
+  project-wide, `git checkout --` the files outside your scope afterwards.
+  Bulk-fixing pre-existing lint debt is a deliberate standalone task, never a
+  side effect of another step.
+
+- **Vue does not flush watchers during SSR, so nothing that must be true at
+  first render may depend on one.** A `watch(data, seed, { immediate: true })`
+  runs exactly once on the server — at setup, before the fetch resolves — and
+  never again. In Step 13 that rendered every management edit form with *empty
+  inputs* over records that had data; the client re-seeded on hydration, so it
+  showed as a flash and a hydration mismatch rather than an error. Drive
+  first-render state from the awaited promise instead
+  (`const ready = (async () => { await asyncData; seed(); })()`), and keep the
+  watcher only for later client-side refreshes.
+
+  It survived a whole phase because the check counted `<input>` elements rather
+  than reading their `value`. **Verify the content, not the presence.**
+
+- **`<select>` needs `:selected` on its options, not just `:value` on the
+  select.** `value` is a *property* of a select element, not an attribute, so
+  server rendering drops it and the browser falls back to the first option. A
+  Term that had a TimeGrid rendered as "— None —" until hydration corrected it:
+  the page stating the opposite of the truth. Every `<select>` in
+  `app/components/manage/` binds `:selected` on its `<option>`s for this reason.
+
 - **Permissions**: per-tenant, tenant-configured roles — never a hardcoded
   global role enum in application logic.
 - **`Role` and `AccessRole` are different things that share a word.** `Role`
@@ -222,12 +263,35 @@ third exception is a bug.
 - [x] Tenant provisioning CLI (`bun run provision:tenant`)
 - [x] Authentication (global Account, post-login tenant selection)
 - [x] Per-tenant permissions (AccessRole + fixed permission catalogue)
-- [ ] Login/profile UI wired to the auth API — **next**
+- [x] Login/profile UI wired to the auth API
+- [x] Schedule view + editor UI
+- [x] Management UI for the core entities + Ctrl+K command palette
+- [ ] AccessRole / permission management UI — **next (Step 14)**
 - [ ] Import (CSV/Excel)
 - [ ] Export (iCal/Google/Outlook)
 - [ ] Notifications (delivery; audience resolution already exists)
 
 Update the checklist above as phases complete — don't let this file go stale.
+
+### Step 14: AccessRole management has no UI and no API
+
+Tenant roles are currently editable **only by `provision:tenant`** (which grants
+the whole catalogue to `tenant-admin` at creation) and by the Step 13 operator
+CLI `bun run grant:permissions` (which backfills grants onto an existing role).
+There is no way for a tenant admin to compose a role, and no route behind it:
+
+- `access_role.manage` and `person_access_role.assign` are in the permission
+  catalogue and granted to `tenant-admin`, but **no endpoint checks either** —
+  they are currently unreachable code paths.
+- `access_role`, `access_role_permission` and `person_access_role` are not in
+  `RESOURCES` or `RELATIONS`, so the generic CRUD and relation routes do not
+  serve them.
+
+That is deliberate for Step 13 (the brief scoped it to the nine core entities)
+and is the whole of Step 14. Note the shape it needs is unusual: AccessRole is
+tenant data, but the permissions it bundles are *code*, so its editor is a
+picker over the fixed catalogue rather than a free-form form — closer to the
+constraint rule builder than to the generic scaffold.
 
 ### Open items on auth (tracked, deliberately not built)
 
@@ -249,6 +313,48 @@ Update the checklist above as phases complete — don't let this file go stale.
   no model yet.
 - **Session cleanup**: expired `auth_session` rows are never swept. Harmless but
   unbounded; a periodic delete should exist before production.
+
+## The management area (Step 13)
+
+`/manage` is one scaffold, not eleven pages. Three route files
+(`[entity]/index`, `[entity]/new`, `[entity]/[id]`) render every entity from
+`app/utils/manageRegistry.ts`, which is also the **navigation source** —
+`useNavEntries()` projects the manage section straight out of it, so the
+sidebar, the `/manage` index, the header and the Ctrl+K palette cannot drift
+from each other or from the entity list.
+
+- **Permission rule, uniform across every entity.** No `.read` → the section is
+  *hidden entirely* (nav, index, palette; direct URL redirects to `/manage`).
+  `.read` without `.create`/`.update`/`.delete` → *visible, read-only*, and
+  read-only renders as **static text, not disabled inputs** — a disabled control
+  reads as "unavailable right now" rather than "not yours". An unknown section
+  is a 404, which keeps a typo distinguishable from a permission problem.
+- **Bespoke means one slot, never a page.** `detailComponent` / `listComponent`
+  replace the fields area or the rows; the shell, header, permission handling,
+  save/error plumbing and delete confirmation stay shared. Only three qualify:
+  `GroupTree` + `GroupForm` (a hierarchy, and a parent picker whose options
+  depend on the row being edited), `TimeGridEditor` (an ISO-weekday array plus a
+  live preview built from the schedule's own `blockTime()`), and
+  `ConstraintBuilder` (type, severity, weight and params constrain each other).
+  **Offering is deliberately not one** — the hub of the model renders on the
+  generic scaffold because its complexity is registry data (`fields`,
+  `relations`), not different code.
+- **`custom: true` on a field** keeps it in the draft, dirty tracking, payload
+  and error mapping while a bespoke component supplies only its control. Leaving
+  a field out of the registry instead drops it from the draft and silently from
+  saves.
+- **Relations are PUT-set sub-resources** (`server/utils/relations.ts`), edited
+  as a whole collection and saved immediately, one request per change. They are
+  not part of the form's Save button: the entity and each relation are separate
+  endpoints with no shared transaction, so one button spanning them could
+  half-succeed with a single error message covering both.
+- **The Ctrl+K palette holds no permission logic at all.** Its entire input is
+  the already-filtered `useNavEntries()`, so there is no check to forget.
+- **Overlays claim the keyboard through `useOverlay()`.** Page-level global
+  Escape handlers (`useScheduleEditing`) stand down while a claim is held,
+  which is what stops closing the palette from also cancelling a placement. The
+  claim follows the open *state*, not the function that changed it — hanging it
+  off `openPalette()` left the header's search button unclaimed.
 
 ## Bootstrap & deploy sequence
 
@@ -272,6 +378,16 @@ The order matters, and each step depends on the one before it.
   production and must not be removed.
 - **Rebuilding a dev database:** `bun run db-reset` (`prisma migrate reset`)
   replays the migrations *and* runs the seed automatically.
+- **Adding a permission needs a fourth step.** `db seed` mirrors the catalogue
+  into the `permission` table, but it deliberately does not touch
+  `access_role_permission` — which permissions a tenant's roles *hold* is tenant
+  configuration, and a seed that silently widened every tenant's admin role on
+  each deploy would be privilege escalation with no audit trail. `provision:tenant`
+  grants the full catalogue only at creation time, so **existing** tenants are
+  left without the new permission and the symptom is a 403 on a feature that
+  visibly exists. Backfill with
+  `bun run grant:permissions -- --role tenant-admin --all-missing`
+  (`--dry-run` first; owner connection, audited to stdout like `reset:password`).
 
 ### The helper schema is `calendry_internal`, never `calendry`
 
@@ -306,6 +422,30 @@ All three owner-connection consumers — the Prisma CLI, the seed, and
 it cannot write the catalogue (SELECT-only RLS policy) and cannot create tenants.
 
 ## Known issues / tech debt
+
+- **Three hand-written indexes are MISSING from the database.** The accidental
+  migration `20260813190131_init` — generated by the `db-reset` script before it
+  was fixed — contains nothing but three `DROP INDEX` statements, and it **is
+  applied**. Confirmed absent from the live database:
+
+  ```
+  session_room_conflict_idx     ON session_room   (room_id, session_id)
+  session_person_conflict_idx   ON session_person (person_id, session_id)
+  session_event_replay_idx      ON session_event  (tenant_id, generation_id, created_at, seq)
+  ```
+
+  The first two back the room/person collision lookups in `refreshViolations()`,
+  which runs synchronously inside every editing route; the third backs event
+  replay (TAXONOMY.md §3 rollback). This is a performance regression, not a
+  correctness one — every query still returns the right answer, which is exactly
+  why it went unnoticed. `migrate reset` will replay the drop, so it does not
+  heal itself.
+
+  Fix forward with a small migration recreating the three (definitions are in
+  `20260812000100_rls_triggers_and_indexes` §7), rather than deleting the bad
+  migration file — that history is already applied in at least one database.
+  Not done as part of Step 13; flagged and left as an explicit decision.
+
 
 Deliberately deferred, with the reasoning, so these are not rediscovered as
 surprises. None of these block current work.

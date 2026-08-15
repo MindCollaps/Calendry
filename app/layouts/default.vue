@@ -14,6 +14,7 @@
             <slot/>
         </div>
         <common-toast-container/>
+        <common-command-palette/>
         <view-version/>
     </div>
 </template>
@@ -23,6 +24,10 @@ import ViewMenu from '~/components/views/ViewMenu.vue';
 import ViewLogin from '~/components/views/ViewLogin.vue';
 import ViewVersion from '~/components/views/ViewVersion.vue';
 import { colorsList } from '#imports';
+
+// Mounted here, once, so Ctrl+K works on every page that uses this layout —
+// including /schedule, whose own Escape handling stands down while the palette
+// holds the keyboard (see composables/overlay.ts).
 
 defineSlots<{ default: () => any }>();
 

@@ -1,5 +1,6 @@
 import type { ComputedRef } from 'vue';
 import type { ScheduleSession } from '~/composables/schedule';
+import { useOverlayActive } from '~/composables/overlay';
 
 /**
  * The editing interaction: what is selected, whether we are placing it, and the
@@ -88,10 +89,16 @@ export function useScheduleEditing(options: {
         }
     }
 
+    const overlayActive = useOverlayActive();
+
     // Escape leaves placement mode before it clears the selection, so one key
     // unwinds the interaction one step at a time.
+    //
+    // While an overlay owns the keyboard (the command palette, a dialog),
+    // Escape belongs to it and this handler stands down — otherwise closing the
+    // palette would also cancel a placement the user is still in the middle of.
     function onKey(event: KeyboardEvent) {
-        if (event.key !== 'Escape') return;
+        if (event.key !== 'Escape' || overlayActive.value) return;
 
         if (placing.value) placing.value = false;
         else clearSelection();

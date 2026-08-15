@@ -27,6 +27,16 @@ export const CRUD_RESOURCES = {
     'time-grids': 'time_grid',
     terms: 'term',
     constraints: 'constraint',
+    // Tenant-open vocabulary (TAXONOMY.md §1): the `kind` values an Offering or
+    // Session can carry. Added in Step 13 because there was no way to create one
+    // — provisioning deliberately makes none, so a fresh tenant could not create
+    // an Offering at all, its `kindId` being a required FK to a table with no
+    // rows and no route.
+    //
+    // Note `session_kind`, not `session`: session.read/move/swap/lock are about
+    // placed Sessions. Being able to rename the vocabulary is not the same
+    // authority as being able to move the timetable.
+    'session-kinds': 'session_kind',
 } as const;
 
 export type CrudAction = 'read' | 'create' | 'update' | 'delete';

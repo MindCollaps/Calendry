@@ -1,21 +1,28 @@
 <template>
     <common-page title="Signed in">
         <!--
-            PLACEHOLDER LANDING PAGE.
+            STILL A LANDING PAGE, not a dashboard. It exists so the login flow
+            has somewhere to land and so the session is inspectable.
 
-            There is no real home screen yet — the schedule UI does not exist.
-            This page exists so the login flow has somewhere to land and so the
-            session is inspectable. Replace it with the schedule view when that
-            is built; do not grow it into one.
+            The old copy here claimed "the schedule UI has not been built yet",
+            which stopped being true two steps ago. Rather than restate what
+            exists — and go stale again — it now lists the destinations the nav
+            registry says this person can actually reach.
         -->
         <p v-if="session">
             {{ session.activePerson?.givenName }} {{ session.activePerson?.familyName }}
             at <strong>{{ session.activeTenant?.name }}</strong>
         </p>
 
-        <p class="landing_note">
-            Placeholder landing page — the schedule UI has not been built yet.
-        </p>
+        <nav class="landing_links">
+            <common-button
+                v-for="entry in destinations"
+                :key="entry.id"
+                :icon="entry.icon"
+                :to="entry.to!"
+                type="secondary"
+            >{{ entry.label }}</common-button>
+        </nav>
 
         <details
             v-if="session"
@@ -45,10 +52,19 @@
 
 <script setup lang="ts">
 import { logout, useSession } from '~/composables/session';
+import { useNavEntries } from '~/composables/navigation';
 
 useHead({ title: 'Home' });
 
 const session = useSession();
+
+// Same permission-filtered registry as the header, sidebar and Ctrl+K. "Home"
+// is dropped because linking a page to itself is noise.
+const navEntries = useNavEntries();
+
+const destinations = computed(() => navEntries.value.filter(
+    (entry) => entry.to && entry.id !== 'home' && entry.section !== 'account',
+));
 
 /**
  * Switching goes back through the login page's selection step rather than
@@ -62,9 +78,11 @@ async function switchTenant() {
 
 <style scoped lang="scss">
 .landing {
-    &_note {
-        margin: 0;
-        color: $content7;
+    &_links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-4);
+        justify-content: center;
     }
 
     &_permissions {

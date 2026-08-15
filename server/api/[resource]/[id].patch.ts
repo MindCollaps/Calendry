@@ -1,5 +1,5 @@
 import { mapDbErrors } from '../../utils/dbErrors';
-import { delegate, getResource } from '../../utils/resources';
+import { delegate, demoteExclusiveSiblings, getResource } from '../../utils/resources';
 import { crudPermission } from '../../utils/permissions';
 import { requirePermission } from '../../utils/requirePermission';
 import { withRequestTenant } from '../../utils/tenantDb';
@@ -21,12 +21,22 @@ export default defineEventHandler(async (event) => {
         //
         // Reparenting a Group is permitted here; group_closure is rebuilt by the
         // database trigger from Step 3. This route must not touch it.
-        const result = await mapDbErrors(() =>
-            delegate(tx, config.model).updateMany({
+        const result = await mapDbErrors(async () => {
+            // Same transaction as the update below, so the two-defaults state is
+            // never observable and a failed update demotes nothing.
+            await demoteExclusiveSiblings(
+                tx,
+                config,
+                identity.tenantId,
+                body as Record<string, unknown>,
+                id,
+            );
+
+            return delegate(tx, config.model).updateMany({
                 where: { id, tenantId: identity.tenantId },
                 data: body as Record<string, unknown>,
-            }),
-        );
+            });
+        });
 
         if (result.count === 0) {
             throw createError({ statusCode: 404, statusMessage: 'Not found.' });

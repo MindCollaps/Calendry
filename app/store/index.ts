@@ -1,12 +1,15 @@
 import type { Toast } from '~~/types/toast';
 import { defineStore } from 'pinia';
-import type { WebUser } from '~~/types/user';
 
+// The `me: WebUser` field and its `types/user.ts` interface were the template's
+// auth stub. They were never connected to Calendry's account model and their
+// only consumer was the old `useHeaderMenu`, which gated on `me.isAdmin`.
+// Navigation now gates on the real permission catalogue, so both are deleted
+// rather than left as a second, wrong idea of who the user is.
 export const useStore = defineStore('index', {
     state: () => ({
         version: '',
         theme: 'default' as ThemesList,
-        me: undefined as WebUser | undefined,
         ready: true, // Set to true, since there is no secondary connection mechanism that would require waiting for the connection to be established
         isMobile: false,
         isMobileOrTablet: false,
