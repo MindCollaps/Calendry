@@ -32,3 +32,5 @@ logs
 /.claude/
 /.impeccable/
 /skills-lock.json
+bunfig.toml
+!bunfig.toml.example

@@ -13,6 +13,22 @@ services:
       - NODE_ENV=development
       - PORT=3000
       - HOME=/app
+      # ⚠ UNVERIFIED — NEEDS REVISITING. Left in place so it is not forgotten,
+      # but do not trust it until someone actually runs `docker compose up`.
+      #
+      # This was built for the .npmrc mechanism, which Stage 1 replaced with
+      # ~/.bunfig.toml. NPM_CONFIG_USERCONFIG relocates an .npmrc; it does NOT
+      # relocate bunfig.toml, so as written this variable no longer points at
+      # the credential the project actually uses.
+      #
+      # The constraint that made it awkward still stands: the dev container runs
+      # `bun install` from its ENTRYPOINT (the repo is bind-mounted), so a
+      # BuildKit secret cannot reach it — and HOME is /app, which IS the repo,
+      # so mounting at $HOME/.bunfig.toml would drop a token into the working
+      # tree. The likely fix is `bun install -c /run/secrets/bunfig` in
+      # entrypoint.dev.sh, but a probe of `-c` produced no registry request, so
+      # that flag is not known to work and must be tested first.
+      - NPM_CONFIG_USERCONFIG=/run/secrets/npmrc
     env_file:
       - .env
     ports:
@@ -20,6 +36,10 @@ services:
       - "51212:51212"
     volumes:
       - .:/app:rw
+      # Read-only, and the host path is the developer's own ~/.npmrc — the token
+      # never enters the repo or any image layer.
+      # ⚠ Same deferral as the variable above — path and mechanism unverified.
+      - ${HOME}/.npmrc:/run/secrets/npmrc:ro
     depends_on:
       db:
         condition: service_healthy

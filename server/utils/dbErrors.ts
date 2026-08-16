@@ -48,6 +48,24 @@ function collectMessages(error: unknown, depth = 0): string {
     return `${own}\n${collectMessages(e.cause, depth + 1)}`;
 }
 
+/**
+ * True when an error is a unique-constraint violation.
+ *
+ * Exported so a caller that OWNS a specific unique index can turn it into a
+ * domain answer instead of a generic 409 "Already exists." — the solver run
+ * route needs to say "a run is already active for this term" and name it, which
+ * only it has the context to do.
+ *
+ * Checks both the SQLSTATE (walking the driver adapter's `cause` chain) and
+ * Prisma's own code, for the same reason `toHttpError` does: which one survives
+ * depends on how the error was wrapped.
+ */
+export function findPgCodeIsUniqueViolation(error: unknown): boolean {
+    return findPgCode(error) === '23505'
+        || (error as { code?: string })?.code === 'P2002'
+        || /duplicate key value/i.test(collectMessages(error));
+}
+
 export function toHttpError(error: unknown): never {
     const e = error as PgLikeError;
     const pgCode = findPgCode(error);

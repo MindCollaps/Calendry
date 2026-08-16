@@ -266,12 +266,158 @@ third exception is a bug.
 - [x] Login/profile UI wired to the auth API
 - [x] Schedule view + editor UI
 - [x] Management UI for the core entities + Ctrl+K command palette
-- [ ] AccessRole / permission management UI — **next (Step 14)**
+- [ ] AccessRole / permission management UI (Step 14)
+- [ ] **Solver integration — IN PROGRESS, see the section below (Stage 1)**
 - [ ] Import (CSV/Excel)
 - [ ] Export (iCal/Google/Outlook)
 - [ ] Notifications (delivery; audience resolution already exists)
 
 Update the checklist above as phases complete — don't let this file go stale.
+
+## Solver integration (calendry-solver)
+
+Three repos, one system. Neither of the other two is checked out as part of
+this one:
+
+| Repo | What it is | How this app consumes it |
+|---|---|---|
+| `calendry` | this app — owns Postgres, all state | — |
+| `calendry-solver` | Rust gRPC optimizer, **stateless** | over gRPC |
+| `calendry-proto` | the shared Protobuf schema | npm package `@mindcollaps/calendry-proto` |
+
+The solver is functionally complete: all 14 constraint types from the §7
+catalogue, LNS with simulated annealing, and a `StartRun`/`GetStatus`/`CancelRun`
+job API. A 27,000-Session large-university instance solves in ~349ms.
+
+**The solver never touches Postgres.** This app assembles a complete
+`SolverInput` snapshot and sends it; the solver is input/output only and
+persists nothing beyond an in-flight run. Everything the solver knows, this app
+put in the request — which means every gap in the snapshot is a wrong answer the
+solver has no way to detect.
+
+`calendry-proto` is consumed here as a normal npm dependency and by the Rust
+side as a pinned git submodule. It is published to **GitHub Packages, not
+npmjs.org**, which requires authentication to install even though it is public.
+
+### Installing the proto package: three traps, all hit for real
+
+The credential lives in `~/.bunfig.toml` (or the gitignored `./bunfig.toml`),
+never in a committed file. `bun run check:registry-auth` diagnoses all of this
+offline; `bunfig.toml.example` is the template. Each rule below cost a round
+trip to discover, and all three produce the *same* opaque 401:
+
+1. **A bunfig scope token is only sent when the SAME entry declares `url`.**
+   `{ token = "…" }` alone is silently ignored — even with the scope mapped to
+   the right registry in `.npmrc`. Verified against a local probe registry that
+   logged the `Authorization` header.
+2. **An `.npmrc` auth line OVERRIDES a bunfig scope token.** A stale, invalid
+   token left in `~/.npmrc` kept beating a perfectly good `bunfig.toml` entry;
+   `curl` with the same good token succeeded the whole time. If bun 401s while
+   curl works, look for a second credential before doubting the first.
+3. **GitHub Packages rejects fine-grained PATs for the npm registry.** A
+   `github_pat_…` token authenticates fine against `api.github.com` (200) and is
+   then refused by the registry with `permission_denied: does not match expected
+   scopes`, and by the packages REST API with `Resource not accessible by
+   personal access token`. Use a **classic** PAT (`ghp_` + 36 chars) with
+   `read:packages`. The guard now catches this by prefix.
+
+Scope entries resolve nearest-first and the nearest wins **wholesale** — a
+project-level entry replaces a home entry rather than merging with it — which is
+why nothing scope-related is committed.
+
+### Decision: warn-and-allow parity for solver output
+
+A run that reaches `RUN_STATUS_SUCCEEDED` but still carries residual hard
+violations **is still offered as an applicable Generation.** Its violations are
+surfaced through the same `constraint_violation` mechanism manual edits already
+use. Not silently discarded, not auto-applied.
+
+`Generation.apply` still requires an explicit human action regardless of
+violation state — unchanged from existing behaviour.
+
+This is parity with §3's manual-edit rule (hard-constraint violations warn, they
+do not block), and it matches what the wire protocol already says: `RunStatus`
+deliberately describes **the run's lifecycle, not the solution's quality**. The
+solver accepts possibly-infeasible input and degrades gracefully rather than
+rejecting it, exactly as `ExactFrequency` (unplaced Sessions) and
+`MaxOnlineShare` (share breaches) already do. A `SUCCEEDED` run with violations
+is a normal outcome, not an error case.
+
+### Decision: single-tenant, non-federated scope for Stages 1–6
+
+Two Federation mechanisms are decided in principle and **NOT implemented in this
+app's schema or RLS**:
+
+- **`ExternalOccupancy`** — occupancy of Federation-shared Rooms by other
+  tenants. The proto message exists and is deliberately shaped to commit to
+  neither of the two candidate mechanisms (cross-tenant occupancy ledger vs. a
+  narrow database function).
+- **`Session` becoming federation-shareable** — extending the Federation
+  exception beyond `room`/`equipment`/`offering`, per the TAXONOMY.md amendment.
+
+Do not attempt either before Stage 7. Sending an empty `external_occupancy` and
+tenant-owned Sessions only is correct for a single-tenant run and wrong the
+moment a shared Room is involved — so the limit is a scope boundary, not an
+oversight, and the deferral is what keeps it visible.
+
+### Determinism: only the move budget is reproducible
+
+`Budget` carries both `max_wall_millis` and `max_moves`, and **whichever is hit
+first ends the run**. The guarantee is that the same `(input, seed, move budget)`
+produces byte-identical output — but that holds **only when termination was by
+move budget**. A wall-clock-terminated run is not reproducible, because how many
+moves fit in a second is not a property of the input.
+
+`SolveStats.termination_reason` reports which one ended it (`"move_budget"`,
+`"time_budget"`, `"converged"`, `"cancelled"`). Anything that claims to explain,
+replay or diff a run must read that field first; treating a `time_budget` run as
+replayable produces a different answer and blames the wrong thing.
+
+`StartRunResponse.seed` echoes the seed actually used (0 = solver picks one), so
+a run is reproducible even when the caller did not choose the seed.
+
+### Both of the above are now CONFIRMED, not just designed
+
+Measured in Stage 1 against a live `calendry-solver`, not inferred from the
+proto:
+
+- **Determinism.** Two runs of an identical snapshot at seed 42 produced
+  byte-identical placements, objective and termination reason. Note a third
+  terminal reason beyond the two in the guarantee: `converged`, when the
+  constructive heuristic lands a zero-objective solution in 0 moves. It is as
+  reproducible as `move_budget`; `time_budget` remains the one that is not.
+- **Warn-and-allow is the solver's actual behaviour.** An over-constrained
+  snapshot (60 sessions demanded into a 40-slot grid) returned
+  `RUN_STATUS_SUCCEEDED`, `termination_reason=move_budget`, objective 21, **40
+  placements and 2 `ExactFrequency` hard violations** — rather than failing the
+  run. Stage 5 can rely on this: a SUCCEEDED run carrying violations is normal,
+  and the residuals arrive in `SolverOutput.hard_violations` ready to be mapped
+  onto `constraint_violation`.
+
+### Staged plan
+
+| Stage | Scope |
+|---|---|
+| ~~1~~ | **DONE.** Package wiring (`bunfig.toml` auth), `@mindcollaps/calendry-proto@0.2.0` + `@grpc/grpc-js` installed, real StartRun→GetStatus round trip proven against a live solver. `scripts/solver-smoke.ts` is the throwaway probe — delete it when Stage 2 lands a real client. |
+| **2** | `solver_run` schema; concurrency rule — **one active run per term per tenant**; real StartRun/GetStatus/CancelRun API surface. |
+| 3 | Real `SolverInput` assembly from Prisma, including computing `reference_slot` — mapping "now" onto the tenant's academic calendar so past Sessions are correctly excluded. |
+| 4 | Polling cadence and its implementation. |
+| 5 | Applying results into a real `Generation` + `Session` rows, per warn-and-allow above. |
+| 6 | UI: trigger, status/progress, review-before-apply. |
+| 7 | Federation support (deferred from 1–6), **and** closing a cross-repo gap found during solver work: this app's own manual-edit evaluator is **missing a PersonDoubleBooking check** — see below. |
+
+### Tracked gap: the manual-edit evaluator misses person clashes across groups
+
+Found while building the solver. `server/utils/violations.ts` evaluates
+`no_double_booking_lecturer` by intersecting `session_person` rows, which catches
+a person assigned to two overlapping Sessions directly. It does **not** catch a
+person who is clashed into two overlapping Sessions via membership of two
+unrelated Groups — no ancestor/descendant relationship, so `conflictGroupIds()`
+does not connect them, and nothing flags it.
+
+A manual edit can therefore create a real person-level clash that the UI reports
+as clean. Correctness gap, not performance. Scheduled for Stage 7; do not treat
+the existing lecturer check as covering it.
 
 ### Step 14: AccessRole management has no UI and no API
 

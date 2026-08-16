@@ -57,6 +57,11 @@ const ids = {
     sessionA: 'test-session-a',
     sessionB: 'test-session-b',
     generationA: 'test-generation-a',
+    // Solver runs are per-Term; the permission test needs a real term id in
+    // tenant A so the request reaches the permission check rather than 404ing
+    // on a bad term.
+    termA: 'test-term-a',
+    termB: 'test-term-b',
 };
 
 export type Fixtures = typeof ids;

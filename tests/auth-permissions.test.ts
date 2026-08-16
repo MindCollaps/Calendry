@@ -138,7 +138,10 @@ describe('permission enforcement', () => {
                 body: JSON.stringify({ givenName: 'X', familyName: 'Y' }),
             }),
             api('/api/violations', { cookie }),
-            api('/api/solver/generations', { method: 'POST', cookie, body: JSON.stringify({}) }),
+            // Stage 2 replaced the /api/solver/generations 501 stub with the
+            // real run surface. Still `solver.trigger`, still denied — the
+            // assertion is unchanged, only the path moved.
+            api('/api/solver/runs', { method: 'POST', cookie, body: JSON.stringify({ termId: f.termA }) }),
         ]);
 
         for (const res of denied) {

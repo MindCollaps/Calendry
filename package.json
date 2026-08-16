@@ -4,6 +4,8 @@
   "private": true,
   "version": "0.0.1",
   "scripts": {
+    "preinstall": "node scripts/check-registry-auth.mjs",
+    "check:registry-auth": "node scripts/check-registry-auth.mjs",
     "build": "nuxt build",
     "dev": "UID=$(id -u) GID=$(id -g) docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
     "dev:down": "docker compose -f docker-compose.yml -f docker-compose.dev.yml down",
@@ -29,9 +31,12 @@
     "db-reset": "bun run db-reset-db",
     "seed:demo": "bun run scripts/seed-demo-schedule.ts",
     "reset:password": "bun run scripts/reset-password.ts",
-    "grant:permissions": "bun run scripts/grant-permissions.ts"
+    "grant:permissions": "bun run scripts/grant-permissions.ts",
+    "solver:smoke": "bun run scripts/solver-smoke.ts"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.4",
+    "@mindcollaps/calendry-proto": "^0.2.0",
     "@nuxt/fonts": "^0.14.0",
     "@nuxt/icon": "^2.2.3",
     "@nuxt/image": "^2.0.0",

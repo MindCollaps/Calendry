@@ -8,3 +8,7 @@ data
 .DS_Store
 tsconfig.client.tsbuildinfo
 bun-debug.log*
+
+# A local bunfig.toml carries the registry token; keep it out of the build
+# context entirely so `COPY . .` in the builder stage cannot capture it.
+bunfig.toml

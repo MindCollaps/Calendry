@@ -45,6 +45,97 @@ enum GenerationSource {
   @@map("generation_source")
 }
 
+/// Lifecycle of ONE solver run. Mirrors calendry.solver.v1.RunStatus, plus
+/// PENDING for the window this app owns alone.
+///
+/// There is deliberately no SUCCEEDED_WITH_VIOLATIONS. RunStatus describes the
+/// run's lifecycle, not the solution's quality — a completed run carrying
+/// residual hard violations is a normal outcome under warn-and-allow
+/// (CLAUDE.md), and the violations live in the result, not in this column.
+/// Encoding them here would bake in the classification the wire protocol
+/// deliberately refused to make.
+enum SolverRunStatus {
+  /// Row written, StartRun not yet acknowledged. App-only: the row must exist
+  /// before the call so the one-active-run index can reject a concurrent
+  /// second attempt.
+  PENDING
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  CANCELLED
+  FAILED
+
+  @@map("solver_run_status")
+}
+
+/// One request to the external solver service.
+///
+/// The solver is stateless and persists nothing beyond an in-flight run, so
+/// this table is the app's only record that a run happened. It holds the
+/// request (scope, budget, seed) and the last status snapshot — enough to
+/// explain or reproduce a run without asking the solver anything.
+model SolverRun {
+  id       String @id @default(uuid(7))
+  tenantId String @map("tenant_id")
+  termId   String @map("term_id")
+
+  /// The solver's own run id, from StartRunResponse. Null until StartRun acks.
+  externalRunId String? @map("external_run_id")
+
+  status SolverRunStatus @default(PENDING)
+
+  /// SolveScope exactly as sent: offeringIds, groupIds, outsideScopePolicy.
+  scope Json @default("{}")
+
+  /// Reproducibility inputs. `seed` is what the solver reported USING, echoed
+  /// back from StartRunResponse — a request of 0 means it chose its own.
+  seed          BigInt?
+  maxWallMillis Int?    @map("max_wall_millis")
+  maxMoves      BigInt? @map("max_moves")
+
+  /// Last GetStatus snapshot. Overwritten per poll, not appended — the run's
+  /// history is not something anything needs.
+  progress          Float   @default(0)
+  bestObjective     Float?  @map("best_objective")
+  movesEvaluated    BigInt? @map("moves_evaluated")
+  elapsedMillis     Int?    @map("elapsed_millis")
+  /// "move_budget" | "time_budget" | "converged" | "cancelled". Read this
+  /// before claiming a run is reproducible: only a time_budget run is not.
+  terminationReason String? @map("termination_reason")
+
+  errorDetail String? @map("error_detail")
+
+  /// Stage 5 fills this when a result is materialized into a Generation.
+  /// Nullable and unused until then.
+  generationId String? @map("generation_id")
+
+  /// Provenance and solver-side echoes. Stage 2 marks every run with
+  /// `inputSource: "stage-2-placeholder"`, because the input is hand-written
+  /// rather than assembled from tenant data.
+  meta Json @default("{}")
+
+  requestedById String?   @map("requested_by_id")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  startedAt     DateTime? @map("started_at") @db.Timestamptz(3)
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz(3)
+  lastPolledAt  DateTime? @map("last_polled_at") @db.Timestamptz(3)
+
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  term        Term        @relation(fields: [termId], references: [id], onDelete: Cascade)
+  generation  Generation? @relation(fields: [generationId], references: [id], onDelete: SetNull)
+  requestedBy Person?     @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+
+  /// At most one PENDING/QUEUED/RUNNING run per term, enforced by the partial
+  /// unique index `solver_run_one_active_per_term` in migration
+  /// 20260816120000_solver_run. Prisma cannot express a partial unique index,
+  /// so it exists in SQL only — `prisma migrate dev` will offer to drop it as
+  /// drift. Do not let it (see CLAUDE.md).
+  @@index([tenantId])
+  @@index([tenantId, termId])
+  @@index([generationId])
+  @@map("solver_run")
+}
+
 enum GenerationStatus {
   PENDING
   RUNNING
@@ -153,6 +244,7 @@ model Tenant {
   accessRoles          AccessRole[]
   accessRolePermissions AccessRolePermission[]
   personAccessRoles    PersonAccessRole[]
+  solverRuns           SolverRun[]
 
   @@index([federationId])
   @@map("tenant")
@@ -193,6 +285,7 @@ model Person {
   accountLink       AccountPerson?
   authSessions      AuthSession[]
   accessRoles       PersonAccessRole[]
+  solverRuns        SolverRun[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, externalRef])
@@ -483,6 +576,7 @@ model Term {
   calendarPeriods CalendarPeriod[]
   offerings       Offering[]
   sessions        Session[]
+  solverRuns      SolverRun[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -891,6 +985,7 @@ model Generation {
   sessions   Session[]
   events     SessionEvent[]
   violations ConstraintViolation[]
+  solverRuns SolverRun[]
 
   @@unique([tenantId, version])
   @@index([tenantId])

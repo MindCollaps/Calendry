@@ -1,0 +1,30 @@
+# Copy the entry below into ~/.bunfig.toml — NOT into this directory.
+#
+# WHY NOT HERE: bun resolves an `install.scopes` entry nearest-first and the
+# nearest one wins WHOLESALE. A project-level entry replaces your home entry
+# entirely rather than merging with it, so a committed one would shadow every
+# developer's credential. (Verified: same scope in both files, project url won
+# and the home token was never sent.) ./bunfig.toml is gitignored so a local
+# copy is safe from commit, but a token inside the repo is still one
+# `git add -f` — or one `COPY . .` in a Docker build — from travelling further
+# than intended.
+#
+# BOTH KEYS ARE REQUIRED. This is the part that is easy to get wrong:
+#
+#   { token = "..." }              -> bun NEVER SENDS IT. A scope token is
+#                                     attached to the url in the SAME entry;
+#                                     without url it is silently ignored, and
+#                                     the resulting 401 is identical to having
+#                                     no token at all.
+#   { url = "..." }                -> anonymous; 401.
+#   { url = "...", token = "..." } -> correct.
+#
+# Token: a GitHub PAT with the `read:packages` scope.
+#   classic       ghp_ + 36 chars   (40 total)
+#   fine-grained  github_pat_...    (~93 total)
+#   https://github.com/settings/tokens
+#
+# Verify without installing:  bun run check:registry-auth
+
+[install.scopes]
+"@mindcollaps" = { url = "https://npm.pkg.github.com/", token = "REPLACE_ME" }
