@@ -529,15 +529,41 @@ account. Use it for route testing rather than a human's credential.
 `vic@demo.local` can now be recreated through this path whenever that tracked
 cleanup happens.
 
-### CONSTRAINT DATA ODDITY to resolve in Stage 3d
+### Tracked gap: severity is validated too late
 
-The `test` tenant has **two enabled `minimize_exam_week_sessions` constraints**,
-weights 5 and 10, both with empty `params` and no scope rows. That is either a
-duplicate or an intent to scope them differently by `kind` — `ConstraintConfig`
-carries `applies_to_kinds`, which would make two instances of one type
-meaningful. Resolve it in 3d rather than carrying it forward: right now they are
-both skipped for want of parameters, so the ambiguity is invisible, and once
-scoping lands they would both be sent and double-count.
+`shared/constraintTypes.ts` pins a fixed severity per constraint type — a
+double-booked room is not a preference, and "avoid Saturdays" is not a defect.
+The rule builder honours that (it renders severity as static text when pinned),
+but the **generic CRUD API accepts whatever it is given**, so a row saying
+`no_double_booking_room` is SOFT with a weight can be created directly through
+`POST /api/constraints`.
+
+The wire has no severity field at all — the TYPE determines hard/soft — so
+Stage 3d's mapper sends the CATALOGUE's severity and reports the contradiction
+in `report.severityMismatches`. That is the right behaviour at solve time, but
+it is the wrong PLACE to catch it: the row should not have been storable.
+
+The more correct fix is for the resource's zod schema to reject a severity that
+contradicts the catalogue at write time, which needs `RESOURCES.constraints` to
+consult `CONSTRAINT_TYPES` in a refinement. Not done — flagged so the eventual
+fix lands at the write boundary rather than accumulating more downstream
+compensation.
+
+### The duplicate constraint: RESOLVED, and what it revealed
+
+The `test` tenant had two enabled `minimize_exam_week_sessions` rows (weights 5
+and 10). It was neither a deliberate duplicate nor kind-scoping: one of them was
+named **"Cap online share per group"** — the catalogue label of a DIFFERENT type
+— and the two were created eighteen seconds apart while exercising the Step 13
+builder.
+
+That mismatch was a real bug in `ManageConstraintBuilder.selectType()`, which
+auto-filled the name only when it was blank. Choosing a type, then changing your
+mind, updated the type and left the first type's label behind. Because `type` is
+`createOnly`, the resulting row could never be corrected by editing — only
+deleted and recreated. Fixed: the name now follows the type whenever it is still
+an untouched auto-fill, and is never overwritten once someone types their own.
+The mislabelled row was deleted through the API.
 
 ### Step 14: AccessRole management has no UI and no API
 

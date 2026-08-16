@@ -157,14 +157,29 @@
                 >
                     <legend>Parameters</legend>
 
-                    <ManageField
+                    <template
                         v-for="param in selectedType.params"
                         :key="param.key"
-                        :field="paramField(param)"
-                        :model-value="paramValue(param.key)"
-                        :readonly="readonly"
-                        @update:model-value="setParam(param.key, $event)"
-                    />
+                    >
+                        <ManageWeekdayPicker
+                            v-if="param.type === 'weekdays'"
+                            :error="paramError(param)"
+                            :help="param.help"
+                            :label="param.label"
+                            :model-value="(paramValue(param.key) as number[]) ?? []"
+                            :readonly="readonly"
+                            @update:model-value="setParam(param.key, $event)"
+                        />
+
+                        <ManageField
+                            v-else
+                            :error="paramError(param)"
+                            :field="paramField(param)"
+                            :model-value="paramValue(param.key)"
+                            :readonly="readonly"
+                            @update:model-value="setParam(param.key, $event)"
+                        />
+                    </template>
                 </fieldset>
 
                 <p
@@ -182,7 +197,8 @@ import type { ConstraintParamDef } from '#shared/constraintTypes';
 import type { FieldDef } from '~/utils/manageRegistry';
 import ManageEntityForm from '~/components/manage/ManageEntityForm.vue';
 import ManageField from '~/components/manage/ManageField.vue';
-import { CONSTRAINT_TYPES, findConstraintType } from '#shared/constraintTypes';
+import ManageWeekdayPicker from '~/components/manage/ManageWeekdayPicker.vue';
+import { CONSTRAINT_TYPES, findConstraintType, missingConstraintParams } from '#shared/constraintTypes';
 
 /**
  * The constraint rule builder.
@@ -239,10 +255,23 @@ function selectType(key: string) {
             .map((param) => [param.key, param.default]),
     );
 
-    // Naming the constraint after the rule is almost always what was meant, and
-    // it is still editable. Only filled when blank, so it never overwrites a
-    // name someone chose.
-    if (!draft.value.name && type) {
+    /**
+     * Rename ONLY when the name is still auto-filled.
+     *
+     * The previous version filled it only when blank, which produced a real
+     * defect in tenant data: pick "Cap online share per group" (name auto-fills)
+     * → change your mind and pick "Keep exam weeks clear" → the type updates and
+     * the name does not. The saved constraint is then permanently mislabelled,
+     * and since `type` is createOnly it cannot be corrected by editing — only by
+     * deleting and recreating. Exactly one such row existed in the demo tenant.
+     *
+     * So: an untouched auto-filled name follows the type, a name someone
+     * actually typed is never overwritten.
+     */
+    const wasAutoFilled = !draft.value.name
+        || CONSTRAINT_TYPES.some((candidate) => candidate.label === draft.value.name);
+
+    if (wasAutoFilled && type) {
         draft.value.name = type.label;
     }
 }
@@ -268,17 +297,50 @@ function setParam(key: string, value: unknown) {
     draft.value.params = { ...params.value, [key]: value };
 }
 
-/** A catalogue parameter, expressed as a field the generic renderer understands. */
+/**
+ * A catalogue parameter, expressed as a field the generic renderer understands.
+ *
+ * `weekdays` never reaches here — it has its own control. `percent` renders as a
+ * number with a "(%)" label because the tenant thinks in 0–100 while the wire
+ * wants 0.0–1.0; the conversion happens server-side at the mapping boundary, so
+ * what is STORED is what was typed.
+ */
 function paramField(param: ConstraintParamDef): FieldDef {
+    const type: FieldDef['type'] = param.type === 'percent'
+        ? 'number'
+        : param.type === 'select'
+            ? 'select'
+            : param.type === 'boolean'
+                ? 'boolean'
+                : param.type === 'number'
+                    ? 'number'
+                    : 'text';
+
     return {
         key: param.key,
         label: param.type === 'percent' ? `${param.label} (%)` : param.label,
-        type: param.type === 'percent' ? 'number' : param.type,
+        type,
         help: param.help,
         required: param.required,
         min: param.min,
         max: param.max,
+        options: param.options,
     };
+}
+
+/**
+ * Surfaces a missing REQUIRED parameter in the form, because the consequence is
+ * invisible otherwise: the constraint saves happily and is then silently skipped
+ * at solve time. Better to say so while it can still be fixed.
+ */
+function paramError(param: ConstraintParamDef): string | undefined {
+    if (!selectedType.value) {
+        return undefined;
+    }
+
+    return missingConstraintParams(selectedType.value, params.value).includes(param.key)
+        ? `${param.label} is required, or this rule will be skipped when the solver runs.`
+        : undefined;
 }
 
 // Creating from scratch: seed a sensible severity so the weight control's

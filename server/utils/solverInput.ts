@@ -9,6 +9,14 @@ import {
     toWireTimeGrid,
 } from './solverCalendar';
 import { multiRoomSessionIds, toWireSession } from './solverSessions';
+// Relative, not `#shared`: this module is loaded OUTSIDE Nuxt too — by
+// scripts/ and by vitest — where Nuxt's aliases do not exist. App code under
+// app/ can use `#shared` freely because it only ever runs inside Nuxt.
+import {
+    findConstraintType,
+    missingConstraintParams,
+    severityMismatch,
+} from '../../shared/constraintTypes';
 
 /**
  * Stage 3b/3e — the real SolverInput, assembled from tenant data.
@@ -32,8 +40,14 @@ export interface AssemblyReport {
     multiRoomSessions: string[];
     /** Equipment requirements whose quantity the wire cannot carry. */
     droppedEquipmentQuantities: number;
-    /** Constraints not sent, with the reason. Populated by Stage 3d. */
+    /** Constraints not sent, with the reason. Never sent with invented defaults. */
     skippedConstraints: { id: string; type: string; reason: string }[];
+    /**
+     * Rows whose stored severity contradicts the catalogue's fixed severity for
+     * that type. Sent using the CATALOGUE's severity — the wire has no severity
+     * field, the type determines it — with any weight on a HARD type ignored.
+     */
+    severityMismatches: { id: string; type: string; stored: string; expected: string }[];
     counts: {
         rooms: number;
         persons: number;
@@ -54,20 +68,95 @@ export interface AssembledInput {
 }
 
 /**
- * Constraint types this pass can send: the three structural ones, which take no
- * parameters at all.
+ * Turns one stored Constraint row into a wire `ConstraintConfig`, or explains
+ * why it cannot be sent.
  *
- * Everything else is Stage 3d, which has to add parameters the tenant catalogue
- * does not yet declare (MinimizeDayUsage.days, MinimizeRoomRank.rank_threshold,
- * MaxOnlineShare.window). Sending them now with invented defaults would be a
- * constraint that is enabled, transmitted, and quietly wrong — so they are
- * skipped WITH A REASON instead, and the reason travels to the caller.
+ * SKIP-AND-REPORT, never defaults. A constraint missing a required parameter is
+ * withheld with a reason rather than transmitted with a guess: a rule the tenant
+ * never chose, enforced by a solver and reported to nobody, is worse than one
+ * that visibly did not run.
+ *
+ * The type → wire-field mapping is DATA (`wireField` on the catalogue), not a
+ * switch here, so the catalogue stays the one place a type's identity lives.
  */
-const STRUCTURAL_WIRE_MAP: Record<string, keyof ConstraintConfig> = {
-    no_double_booking_room: 'roomDoubleBooking',
-    no_double_booking_lecturer: 'lecturerDoubleBooking',
-    no_double_booking_group: 'groupDoubleBooking',
-};
+export function toWireConstraint(row: {
+    id: string;
+    type: string;
+    severity: string;
+    weight: number | null;
+    params: unknown;
+    scopes: { offeringId: string | null; kindId: string | null }[];
+}, kindKeyById: Map<string, string>): { config: ConstraintConfig } | { skip: string } {
+    const type = findConstraintType(row.type);
+
+    if (!type) {
+        return { skip: `'${row.type}' is not in the constraint catalogue (shared/constraintTypes.ts).` };
+    }
+
+    const params = (row.params && typeof row.params === 'object' ? row.params : {}) as Record<string, unknown>;
+    const missing = missingConstraintParams(type, params);
+
+    if (missing.length) {
+        return { skip: `Required parameter(s) not set: ${missing.join(', ')}.` };
+    }
+
+    /**
+     * `ConstraintScope` can name an Offering, but the wire's ConstraintConfig
+     * has only `applies_to_kinds` — there is no offering-scoped equivalent.
+     * Skipped rather than degraded to unscoped, which would silently WIDEN the
+     * rule to every offering: the opposite of what was configured.
+     */
+    if (row.scopes.some((scope) => scope.offeringId)) {
+        return {
+            skip: 'Scoped to specific offerings, which the wire cannot express '
+                + '(ConstraintConfig carries applies_to_kinds only). Sending it unscoped '
+                + 'would widen the rule rather than narrow it.',
+        };
+    }
+
+    const appliesToKinds = row.scopes
+        .map((scope) => (scope.kindId ? kindKeyById.get(scope.kindId) : undefined))
+        .filter((key): key is string => Boolean(key));
+
+    const config = {
+        id: row.id,
+        enabled: true,
+        appliesToKinds,
+        // Meaningful for SOFT only; the solver ignores it for a HARD type. Read
+        // from the catalogue's severity, not the row's — see severityMismatch.
+        weight: type.severity === 'SOFT' ? (row.weight ?? 0) : 0,
+        [type.wireField]: buildVariant(type.key, params),
+    } as ConstraintConfig;
+
+    return { config };
+}
+
+/**
+ * The per-type payload. Most variants are empty messages — the type IS the
+ * rule — and only three carry parameters.
+ *
+ * `percent` is converted here: tenants think in 0–100, the wire wants 0.0–1.0,
+ * and doing it at this single boundary keeps the STORED value the one the user
+ * typed.
+ */
+function buildVariant(typeKey: string, params: Record<string, unknown>): Record<string, unknown> {
+    switch (typeKey) {
+        case 'max_online_ratio_per_group':
+            return {
+                maxRatio: Number(params.maxRatio) / 100,
+                window: params.window === 'SHARE_WINDOW_PER_WEEK' ? 2 : 1,
+            };
+
+        case 'minimize_saturday':
+            return { days: (params.days as number[]).map(Number).sort((a, b) => a - b) };
+
+        case 'minimize_high_ranking_rooms':
+            return { rankThreshold: Number(params.rankThreshold) };
+
+        default:
+            return {};
+    }
+}
 
 export async function assembleSolverInput(
     tx: Tx,
@@ -133,7 +222,10 @@ export async function assembleSolverInput(
                 where: { tenantId: options.tenantId, termId: term.id },
                 include: { kind: true, rooms: true, people: true, groups: true },
             }),
-            tx.constraint.findMany({ where: { tenantId: options.tenantId, isEnabled: true } }),
+            tx.constraint.findMany({
+                where: { tenantId: options.tenantId, isEnabled: true },
+                include: { scopes: true },
+            }),
             tx.role.findFirst({ where: { tenantId: options.tenantId, key: 'lecturer' }, select: { id: true } }),
         ]);
 
@@ -227,30 +319,40 @@ export async function assembleSolverInput(
         groupIds: session.groups.map((link) => link.groupId),
     }));
 
+    const kindKeyById = new Map(
+        (await tx.sessionKind.findMany({ where: { tenantId: options.tenantId } }))
+            .map((kind) => [kind.id, kind.key]),
+    );
+
     const skippedConstraints: AssemblyReport['skippedConstraints'] = [];
+    const severityMismatches: AssemblyReport['severityMismatches'] = [];
     const constraints: ConstraintConfig[] = [];
 
     for (const row of constraintRows) {
-        const wireField = STRUCTURAL_WIRE_MAP[row.type];
+        const type = findConstraintType(row.type);
+        const mismatch = type ? severityMismatch(type, row.severity) : null;
 
-        if (!wireField) {
-            skippedConstraints.push({
+        if (type && mismatch) {
+            // Reported, not refused and not normalised in the database. The row
+            // is the tenant's; the wire simply has no severity field to carry
+            // the contradiction, so the catalogue's severity wins on the wire.
+            severityMismatches.push({
                 id: row.id,
                 type: row.type,
-                reason: 'Parameter mapping lands in Stage 3d; not sent rather than sent with invented defaults.',
+                stored: mismatch.stored,
+                expected: mismatch.expected,
             });
+        }
+
+        const mapped = toWireConstraint(row, kindKeyById);
+
+        if ('skip' in mapped) {
+            skippedConstraints.push({ id: row.id, type: row.type, reason: mapped.skip });
 
             continue;
         }
 
-        constraints.push({
-            id: row.id,
-            enabled: true,
-            // Empty = all kinds. Constraint scoping by kind is Stage 3d.
-            appliesToKinds: [],
-            weight: row.weight ?? 0,
-            [wireField]: {},
-        } as ConstraintConfig);
+        constraints.push(mapped.config);
     }
 
     const calendar = buildAcademicCalendar(
@@ -288,6 +390,7 @@ export async function assembleSolverInput(
             multiRoomSessions: multiRoomSessionIds(sessionInputs),
             droppedEquipmentQuantities,
             skippedConstraints,
+            severityMismatches,
             counts: {
                 rooms: rooms.length,
                 persons: persons.length,

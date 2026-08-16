@@ -20,40 +20,13 @@
                     :readonly="readonly"
                 />
 
-                <fieldset class="grid-editor_days">
-                    <legend>Teaching days</legend>
-
-                    <!--
-                        Seven toggles labelled from `weekdayName()`, the same
-                        ISO-1..7 helper the schedule grid uses. Not a Mon–Fri
-                        checkbox row with a "weekend" extra: TAXONOMY.md §2
-                        forbids assuming which days an institution teaches on,
-                        and a UI that makes Saturday awkward is that assumption
-                        wearing a different hat.
-                    -->
-                    <label
-                        v-for="iso in ISO_WEEKDAYS"
-                        :key="iso"
-                        class="grid-editor_day"
-                        :class="{ 'grid-editor_day--on': activeDays.includes(iso) }"
-                    >
-                        <input
-                            :checked="activeDays.includes(iso)"
-                            :disabled="readonly"
-                            type="checkbox"
-                            @change="toggleDay(iso)"
-                        >
-                        <span>{{ weekdayName(iso) }}</span>
-                    </label>
-
-                    <p
-                        v-if="form.fieldErrors.value.activeDays || !activeDays.length"
-                        class="grid-editor_error"
-                        role="alert"
-                    >
-                        {{ form.fieldErrors.value.activeDays ?? 'A grid must schedule at least one day.' }}
-                    </p>
-                </fieldset>
+                <ManageWeekdayPicker
+                    v-model="activeDaysModel"
+                    :error="form.fieldErrors.value.activeDays
+                        ?? (activeDays.length ? undefined : 'A grid must schedule at least one day.')"
+                    label="Teaching days"
+                    :readonly="readonly"
+                />
 
                 <label class="grid-editor_default">
                     <input
@@ -125,7 +98,8 @@ import type { useEntityForm } from '~/composables/entityForm';
 import type { TimeGrid } from '~/composables/schedule';
 import ManageEntityForm from '~/components/manage/ManageEntityForm.vue';
 import ManageField from '~/components/manage/ManageField.vue';
-import { blockTime, weekdayName, weekdayShort } from '~/composables/schedule';
+import ManageWeekdayPicker from '~/components/manage/ManageWeekdayPicker.vue';
+import { blockTime, weekdayShort } from '~/composables/schedule';
 
 /**
  * The TimeGrid editor.
@@ -150,9 +124,6 @@ defineEmits<{ save: []; reset: []; 'request-delete': [] }>();
 
 const draft = defineModel<Record<string, unknown>>('draft', { required: true });
 
-/** ISO-8601 weekday numbers. 1 = Monday … 7 = Sunday. */
-const ISO_WEEKDAYS = [1, 2, 3, 4, 5, 6, 7];
-
 // Everything except the day toggles and the default flag, which get their own
 // controls below.
 const scalarFields = computed(() => props.form.fields.filter(
@@ -165,14 +136,14 @@ const activeDays = computed<number[]>(() => {
     return Array.isArray(value) ? [...value].map(Number).sort((a, b) => a - b) : [];
 });
 
-function toggleDay(iso: number) {
-    const current = new Set(activeDays.value);
-
-    if (current.has(iso)) current.delete(iso);
-    else current.add(iso);
-
-    draft.value.activeDays = [...current].sort((a, b) => a - b);
-}
+/**
+ * Bridges the draft (a plain record) to the picker's model. The picker owns the
+ * toggle logic and the sorting; this only decides where the value lives.
+ */
+const activeDaysModel = computed({
+    get: () => activeDays.value,
+    set: (days: number[]) => { draft.value.activeDays = days; },
+});
 
 /** A TimeGrid-shaped view of the draft, so the real helper can read it. */
 const previewGrid = computed<TimeGrid>(() => ({
@@ -227,48 +198,7 @@ const rollsPastMidnight = computed(() => {
     flex-direction: column;
     gap: var(--space-6);
 
-    &_days {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-3);
 
-        margin: 0;
-        padding: 0;
-        border: 0;
-
-        legend {
-            padding: 0 0 var(--space-3);
-            font-size: var(--font-size-sm);
-            font-weight: 650;
-            color: $content4;
-        }
-    }
-
-    &_day {
-        cursor: pointer;
-
-        display: flex;
-        gap: var(--space-3);
-        align-items: center;
-
-        padding: var(--space-3) var(--space-5);
-        border: 1px solid $surface4;
-        border-radius: var(--radius-lg);
-
-        font-size: var(--font-size-sm);
-        font-weight: 600;
-        color: $content5;
-
-        transition: 0.12s;
-
-        input { accent-color: $primary500; }
-
-        &--on {
-            border-color: $primary500;
-            color: $primary700;
-            background: vartorgba('primary500', 0.12);
-        }
-    }
 
     &_default {
         cursor: pointer;

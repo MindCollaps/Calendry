@@ -59,19 +59,61 @@ export type ConstraintEvaluator =
     /** The Rust solver service. Not implemented — configurable but inert. */
     | 'solver';
 
+export type ConstraintParamType =
+    | 'number'
+    /** Stored 0–100 for humans; converted to the wire's 0.0–1.0 at the boundary. */
+    | 'percent'
+    | 'boolean'
+    | 'text'
+    /** ISO-weekday multi-select, 1 = Monday … 7 = Sunday. */
+    | 'weekdays'
+    /** Fixed choice; `options` is required. */
+    | 'select';
+
 export interface ConstraintParamDef {
     key: string;
     label: string;
-    type: 'number' | 'percent' | 'boolean' | 'text';
+    type: ConstraintParamType;
     help?: string;
     min?: number;
     max?: number;
     required?: boolean;
     default?: number | string | boolean;
+    /** For `select`. The value is what reaches the wire. */
+    options?: { value: string; label: string }[];
 }
+
+/**
+ * The field each type populates on the wire's `ConstraintConfig`.
+ *
+ * Declared as data rather than a switch in the mapper so the catalogue is the
+ * single place a type's identity lives, and so a test can assert the mapping is
+ * total and injective without re-reading the mapper's control flow.
+ *
+ * A string union rather than `keyof ConstraintConfig`: this file is imported by
+ * the CLIENT too, and pulling the generated proto types into the browser bundle
+ * to name a field would be a poor trade.
+ */
+export type WireConstraintField =
+    | 'roomDoubleBooking'
+    | 'lecturerDoubleBooking'
+    | 'groupDoubleBooking'
+    | 'personDoubleBooking'
+    | 'exactFrequency'
+    | 'lecturerVeto'
+    | 'onlineOnsiteSameDay'
+    | 'maxOnlineShare'
+    | 'minimizeFirstBlock'
+    | 'minimizeLastBlock'
+    | 'minimizeDayUsage'
+    | 'minimizeRoomRank'
+    | 'minimizeExamWeek'
+    | 'minimizeOnline';
 
 export interface ConstraintTypeDef {
     key: string;
+    /** Which `ConstraintConfig` field this becomes on the wire. */
+    wireField: WireConstraintField;
     label: string;
     /** One sentence, in the tenant's language rather than the schema's. */
     description: string;
@@ -93,6 +135,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     // ---- Structural, evaluated here -----------------------------------------
     {
         key: 'no_double_booking_room',
+        wireField: 'roomDoubleBooking',
         label: 'No double-booked rooms',
         description: 'A room cannot host two sessions that overlap in the same week.',
         evaluator: 'app',
@@ -101,6 +144,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'no_double_booking_lecturer',
+        wireField: 'lecturerDoubleBooking',
         label: 'No double-booked people',
         description: 'Nobody can be assigned to two sessions that overlap.',
         evaluator: 'app',
@@ -109,6 +153,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'no_double_booking_group',
+        wireField: 'groupDoubleBooking',
         label: 'No double-booked groups',
         description:
             'A group cannot have two overlapping sessions. Propagates through nesting: '
@@ -121,6 +166,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     // ---- Hard, solver-owned --------------------------------------------------
     {
         key: 'exact_frequency_per_offering',
+        wireField: 'exactFrequency',
         label: 'Exact session count per offering',
         description: 'Each offering gets exactly the number of sessions it declares — no more, no fewer.',
         evaluator: 'solver',
@@ -129,6 +175,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'lecturer_veto',
+        wireField: 'lecturerVeto',
         label: 'Lecturer unavailability',
         description: 'Days or blocks an individual has blocked out.',
         evaluator: 'solver',
@@ -137,6 +184,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'online_onsite_same_day_exclusion',
+        wireField: 'onlineOnsiteSameDay',
         label: 'No mixing online and on-site in a day',
         description: 'A group is not asked to be on campus and online on the same day.',
         evaluator: 'solver',
@@ -145,6 +193,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'max_online_ratio_per_group',
+        wireField: 'maxOnlineShare',
         label: 'Cap online share per group',
         description: 'At most this share of a group\'s sessions may be online across the term.',
         evaluator: 'solver',
@@ -158,12 +207,24 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
             required: true,
             default: 30,
             help: 'Was hardcoded at 30% in the prototype; it is a parameter here.',
+        }, {
+            key: 'window',
+            label: 'Measured over',
+            type: 'select',
+            required: true,
+            default: 'SHARE_WINDOW_PER_TERM',
+            options: [
+                { value: 'SHARE_WINDOW_PER_TERM', label: 'The whole term' },
+                { value: 'SHARE_WINDOW_PER_WEEK', label: 'Each week' },
+            ],
+            help: 'A 30% cap per term and per week are very different rules; the solver needs to know which.',
         }],
     },
 
     // ---- Soft, solver-owned --------------------------------------------------
     {
         key: 'minimize_first_block',
+        wireField: 'minimizeFirstBlock',
         label: 'Avoid the first block',
         description: 'Prefer not to schedule in the earliest block of the day.',
         evaluator: 'solver',
@@ -172,6 +233,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'minimize_last_block',
+        wireField: 'minimizeLastBlock',
         label: 'Avoid the last block',
         description: 'Prefer not to schedule in the latest block of the day.',
         evaluator: 'solver',
@@ -180,24 +242,45 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'minimize_saturday',
-        label: 'Avoid weekend days',
+        wireField: 'minimizeDayUsage',
+        label: 'Avoid particular days',
         description:
-            'Prefer not to schedule on days late in the week. Resolves against the '
-            + 'tenant\'s TimeGrid rather than assuming which days those are.',
+            'Prefer not to schedule on the chosen weekdays. Generalizes the prototype\'s '
+            + 'hardcoded "minimize Saturday": with tenant-configured active days, Saturday '
+            + 'is not structurally special.',
         evaluator: 'solver',
         severity: 'SOFT',
-        params: [],
+        params: [{
+            key: 'days',
+            label: 'Days to avoid',
+            type: 'weekdays',
+            required: true,
+            // DELIBERATELY NO DEFAULT. Defaulting to [6,7] would reintroduce the
+            // hardcoded-Saturday assumption TAXONOMY.md §7 forbids — a tenant may
+            // not teach Saturday at all, or may want a different day
+            // deprioritized. Unset means the constraint is skipped, not guessed.
+            help: 'No default: which days are undesirable is an institutional decision, not an assumption.',
+        }],
     },
     {
         key: 'minimize_high_ranking_rooms',
+        wireField: 'minimizeRoomRank',
         label: 'Spare the best rooms',
-        description: 'Prefer lower-ranked rooms, keeping desirable ones free.',
+        description: 'Prefer lower-ranked rooms, keeping premium ones free.',
         evaluator: 'solver',
         severity: 'SOFT',
-        params: [],
+        params: [{
+            key: 'rankThreshold',
+            label: 'Penalize rooms ranked at or above',
+            type: 'number',
+            min: 0,
+            required: true,
+            help: 'Room.ranking is ordered HIGHER = more premium. No default: "premium" is per-institution.',
+        }],
     },
     {
         key: 'minimize_exam_week_sessions',
+        wireField: 'minimizeExamWeek',
         label: 'Keep exam weeks clear',
         description:
             'Prefer not to schedule during exam periods. Resolves against the academic '
@@ -208,6 +291,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
     },
     {
         key: 'minimize_online_sessions',
+        wireField: 'minimizeOnline',
         label: 'Prefer on-site',
         description: 'Prefer on-site delivery where either would satisfy the offering.',
         evaluator: 'solver',
@@ -238,4 +322,58 @@ export function constraintCatalogueDrift(): { missingFromCatalogue: string[]; mi
         missingFromCatalogue: evaluated.filter((key) => !declared.has(key)),
         missingFromEvaluators: CONSTRAINT_TYPE_KEYS.filter((key) => !evaluated.includes(key as never)),
     };
+}
+
+/**
+ * Params a type requires but this constraint row does not supply.
+ *
+ * Drives skip-and-report: a constraint missing a required parameter is NOT sent
+ * with an invented default. A default here would be a rule the tenant never
+ * chose, enforced by a solver, reported to nobody — the exact shape of failure
+ * this codebase keeps designing against.
+ *
+ * `0` and `false` are legitimate values, so emptiness is tested explicitly
+ * rather than by falsiness: `rankThreshold: 0` means "penalize every room",
+ * which is a real policy and must not read as unset.
+ */
+export function missingConstraintParams(
+    type: ConstraintTypeDef,
+    params: Record<string, unknown> | null | undefined,
+): string[] {
+    const supplied = params ?? {};
+
+    return type.params
+        .filter((param) => param.required)
+        .filter((param) => {
+            const value = supplied[param.key];
+
+            if (value === undefined || value === null || value === '') {
+                return true;
+            }
+
+            // An empty weekday list is "avoid no days" — indistinguishable from
+            // not having answered, and meaningless as a constraint either way.
+            return param.type === 'weekdays' && Array.isArray(value) && value.length === 0;
+        })
+        .map((param) => param.key);
+}
+
+/**
+ * Does this row's stored severity contradict the catalogue?
+ *
+ * The catalogue pins severity per type because the severity IS the meaning, but
+ * the generic CRUD API accepts whatever it is given — so a row can exist saying
+ * `no_double_booking_room` is SOFT. The wire has no severity field at all (the
+ * TYPE determines hard/soft), so such a row is sent as its true severity and any
+ * weight is ignored. Reported rather than silently normalised.
+ */
+export function severityMismatch(
+    type: ConstraintTypeDef,
+    storedSeverity: string,
+): { expected: string; stored: string } | null {
+    if (!type.severity || type.severity === storedSeverity) {
+        return null;
+    }
+
+    return { expected: type.severity, stored: storedSeverity };
 }

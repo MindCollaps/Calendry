@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
-import { STRUCTURAL_CONSTRAINT_TYPES } from '#shared/constraintTypes';
-import type { StructuralConstraintType } from '#shared/constraintTypes';
+import { STRUCTURAL_CONSTRAINT_TYPES } from '../../shared/constraintTypes';
+import type { StructuralConstraintType } from '../../shared/constraintTypes';
 import type { Tx } from './tenantDb';
 import { conflictGroupIds } from './groupClosure';
 
@@ -31,11 +31,14 @@ import { conflictGroupIds } from './groupClosure';
  *
  * Re-exported here so every existing importer keeps working unchanged.
  */
+// Relative, not `#shared`: this module is loaded OUTSIDE Nuxt too — by
+// scripts/ and by vitest — where Nuxt's aliases do not exist. App code under
+// app/ can use `#shared` freely because it only ever runs inside Nuxt.
 export {
     STRUCTURAL_CONSTRAINT_TYPES,
     SOLVER_OWNED_CONSTRAINT_TYPES,
-} from '#shared/constraintTypes';
-export type { StructuralConstraintType } from '#shared/constraintTypes';
+} from '../../shared/constraintTypes';
+export type { StructuralConstraintType } from '../../shared/constraintTypes';
 
 interface PlacedSession {
     id: string;
