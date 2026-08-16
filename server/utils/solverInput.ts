@@ -1,0 +1,315 @@
+import { createHash } from 'node:crypto';
+import { SolverInput } from '@mindcollaps/calendry-proto';
+import type { ConstraintConfig, Offering, Person, Room, SlotRef } from '@mindcollaps/calendry-proto';
+import type { Tx } from './tenantDb';
+import {
+    TermEndedError,
+    buildAcademicCalendar,
+    computeReferenceSlot,
+    toWireTimeGrid,
+} from './solverCalendar';
+import { multiRoomSessionIds, toWireSession } from './solverSessions';
+
+/**
+ * Stage 3b/3e — the real SolverInput, assembled from tenant data.
+ *
+ * THE SOLVER KNOWS ONLY WHAT IS IN HERE. It never touches Postgres, so every
+ * omission below is a wrong answer it has no way to detect: a Room left out is
+ * a Room it will never use, a Session left out is a slot it thinks is free.
+ * That is why the narrowings are counted and returned rather than being quiet.
+ *
+ * SCOPE (CLAUDE.md, Stages 1–6): single-tenant, non-federated. Federation-owned
+ * Rooms and Offerings are EXCLUDED, not included-and-hoped-for — including a
+ * shared Room while sending an empty `external_occupancy` is precisely the case
+ * that silently double-books across a tenant boundary.
+ */
+
+/** Everything narrowed or dropped on the way to the wire. Returned, never swallowed. */
+export interface AssemblyReport {
+    excludedFederationRooms: number;
+    excludedFederationOfferings: number;
+    /** Sessions whose extra Rooms the wire cannot carry (see CLAUDE.md). */
+    multiRoomSessions: string[];
+    /** Equipment requirements whose quantity the wire cannot carry. */
+    droppedEquipmentQuantities: number;
+    /** Constraints not sent, with the reason. Populated by Stage 3d. */
+    skippedConstraints: { id: string; type: string; reason: string }[];
+    counts: {
+        rooms: number;
+        persons: number;
+        groups: number;
+        offerings: number;
+        existingSessions: number;
+        constraints: number;
+        weeks: number;
+    };
+}
+
+export interface AssembledInput {
+    input: SolverInput;
+    referenceSlot: SlotRef;
+    /** SHA-256 over the serialized input — makes "same problem?" answerable. */
+    inputHash: string;
+    report: AssemblyReport;
+}
+
+/**
+ * Constraint types this pass can send: the three structural ones, which take no
+ * parameters at all.
+ *
+ * Everything else is Stage 3d, which has to add parameters the tenant catalogue
+ * does not yet declare (MinimizeDayUsage.days, MinimizeRoomRank.rank_threshold,
+ * MaxOnlineShare.window). Sending them now with invented defaults would be a
+ * constraint that is enabled, transmitted, and quietly wrong — so they are
+ * skipped WITH A REASON instead, and the reason travels to the caller.
+ */
+const STRUCTURAL_WIRE_MAP: Record<string, keyof ConstraintConfig> = {
+    no_double_booking_room: 'roomDoubleBooking',
+    no_double_booking_lecturer: 'lecturerDoubleBooking',
+    no_double_booking_group: 'groupDoubleBooking',
+};
+
+export async function assembleSolverInput(
+    tx: Tx,
+    options: { tenantId: string; termId: string; now: Date },
+): Promise<AssembledInput> {
+    const tenant = await tx.tenant.findFirstOrThrow({
+        where: { id: options.tenantId },
+        select: { id: true, timezone: true, federationId: true },
+    });
+
+    const term = await tx.term.findFirst({
+        where: { id: options.termId, tenantId: options.tenantId },
+        include: { timeGrid: true, calendarPeriods: true },
+    });
+
+    if (!term) {
+        throw createError({ statusCode: 404, statusMessage: 'Term not found.' });
+    }
+
+    // A grid is not optional: every placement is addressed against it, and
+    // TAXONOMY.md §2 forbids assuming a shape when one is missing.
+    const grid = term.timeGrid
+        ?? await tx.timeGrid.findFirst({ where: { tenantId: options.tenantId, isDefault: true } });
+
+    if (!grid) {
+        throw createError({
+            statusCode: 422,
+            statusMessage: 'This term has no TimeGrid and the tenant has no default. Nothing can be placed.',
+        });
+    }
+
+    // Throws TermEndedError, which the route turns into a 422 rather than
+    // returning a confidently empty timetable.
+    const referenceSlot = computeReferenceSlot({
+        now: options.now,
+        timeZone: tenant.timezone,
+        termStart: term.startDate,
+        termEnd: term.endDate,
+        grid,
+    });
+
+    const [roomRows, personRows, groupRows, offeringRows, sessionRows, constraintRows, lecturerRole] =
+        await Promise.all([
+            tx.room.findMany({
+                where: { tenantId: options.tenantId, isActive: true },
+                include: { roomEquipment: { include: { equipment: true } } },
+            }),
+            tx.person.findMany({
+                where: { tenantId: options.tenantId, isActive: true },
+                include: { personRoles: { include: { role: true } }, memberships: true },
+            }),
+            tx.group.findMany({ where: { tenantId: options.tenantId } }),
+            tx.offering.findMany({
+                where: { tenantId: options.tenantId, termId: term.id, isActive: true },
+                include: {
+                    kind: true,
+                    groups: true,
+                    lecturers: true,
+                    equipment: { include: { equipment: true } },
+                },
+            }),
+            tx.session.findMany({
+                where: { tenantId: options.tenantId, termId: term.id },
+                include: { kind: true, rooms: true, people: true, groups: true },
+            }),
+            tx.constraint.findMany({ where: { tenantId: options.tenantId, isEnabled: true } }),
+            tx.role.findFirst({ where: { tenantId: options.tenantId, key: 'lecturer' }, select: { id: true } }),
+        ]);
+
+    /**
+     * Federation-owned rows are visible to this tenant through the widened RLS
+     * read policy, so they arrive in these queries and must be filtered out
+     * explicitly. Counted, because "your shared lecture hall was not considered"
+     * is something the caller needs told.
+     */
+    const federationRooms = await tx.room.count({
+        where: { federationId: { not: null }, tenantId: null, isActive: true },
+    });
+    const federationOfferings = await tx.offering.count({
+        where: { federationId: { not: null }, tenantId: null, termId: term.id, isActive: true },
+    });
+
+    const rooms: Room[] = roomRows.map((room) => ({
+        id: room.id,
+        tenantId: options.tenantId,
+        name: `${room.code} · ${room.name}`,
+        capacity: room.capacity,
+        // Same direction on both sides: HIGHER = more premium/scarce.
+        rank: Math.max(0, room.ranking),
+        isVirtual: room.isVirtual,
+        // Presence only — RoomEquipment.quantity has nowhere to go on the wire.
+        featureTags: room.roomEquipment.map((link) => link.equipment.key),
+        location: room.location ?? '',
+    } as Room));
+
+    const persons: Person[] = personRows.map((person) => ({
+        id: person.id,
+        roleTags: person.personRoles.map((link) => link.role.key),
+        groupIds: person.memberships.map((link) => link.groupId),
+        // The app models no unavailability at all, so this is empty and
+        // LecturerVeto is unsendable. Tracked; see the Stage 3d follow-up.
+        blackouts: [],
+    }));
+
+    const groups = groupRows.map((group) => ({
+        id: group.id,
+        parentId: group.parentGroupId ?? '',
+        name: group.name,
+        size: group.expectedSize ?? 0,
+        // group_closure is deliberately NOT transmitted: the solver derives the
+        // ancestor/descendant closure from parent_id, and shipping ours would
+        // create a second source of truth that can drift undetectably.
+    }));
+
+    let droppedEquipmentQuantities = 0;
+
+    const offerings: Offering[] = offeringRows.map((offering) => {
+        droppedEquipmentQuantities += offering.equipment.filter((link) => link.quantity !== null).length;
+
+        return {
+            id: offering.id,
+            tenantId: options.tenantId,
+            kind: offering.kind.key,
+            requiredSessionCount: offering.frequency,
+            durationBlocks: offering.durationBlocks,
+            candidateLecturerIds: offering.lecturers.map((link) => link.personId),
+            // The app has no separate count: OfferingLecturer IS the assignment
+            // ("Who leads it" in the management UI), so the pool equals the
+            // requirement and the solver does not choose. Tracked as a modelling
+            // limit rather than papered over with a guess.
+            requiredLecturerCount: offering.lecturers.length,
+            groupIds: offering.groups.map((link) => link.groupId),
+            // The app models no direct per-Offering participants beyond groups.
+            participantPersonIds: [],
+            requiredRoomFeatures: offering.equipment.map((link) => link.equipment.key),
+            minCapacity: offering.requiredCapacity ?? 0,
+            // Empty = any eligible Room. The app has no allow-list.
+            allowedRoomIds: [],
+            allowOnline: offering.allowOnline,
+        } as Offering;
+    });
+
+    const sessionInputs = sessionRows.map((session) => ({
+        id: session.id,
+        tenantId: session.tenantId,
+        offeringId: session.offeringId,
+        kindId: session.kindId,
+        kindKey: session.kind.key,
+        termWeek: session.termWeek,
+        dayOfWeek: session.dayOfWeek,
+        blockIndex: session.blockIndex,
+        durationBlocks: session.durationBlocks,
+        isLocked: session.isLocked,
+        roomIds: session.rooms.map((link) => link.roomId),
+        lecturerIds: session.people.filter((p) => p.roleId === lecturerRole?.id).map((p) => p.personId),
+        personIds: session.people.filter((p) => p.roleId !== lecturerRole?.id).map((p) => p.personId),
+        groupIds: session.groups.map((link) => link.groupId),
+    }));
+
+    const skippedConstraints: AssemblyReport['skippedConstraints'] = [];
+    const constraints: ConstraintConfig[] = [];
+
+    for (const row of constraintRows) {
+        const wireField = STRUCTURAL_WIRE_MAP[row.type];
+
+        if (!wireField) {
+            skippedConstraints.push({
+                id: row.id,
+                type: row.type,
+                reason: 'Parameter mapping lands in Stage 3d; not sent rather than sent with invented defaults.',
+            });
+
+            continue;
+        }
+
+        constraints.push({
+            id: row.id,
+            enabled: true,
+            // Empty = all kinds. Constraint scoping by kind is Stage 3d.
+            appliesToKinds: [],
+            weight: row.weight ?? 0,
+            [wireField]: {},
+        } as ConstraintConfig);
+    }
+
+    const calendar = buildAcademicCalendar(
+        term.id,
+        term.startDate,
+        term.endDate,
+        term.calendarPeriods.map((p) => ({ kind: p.kind, startDate: p.startDate, endDate: p.endDate })),
+    );
+
+    const input: SolverInput = {
+        requestingTenantId: options.tenantId,
+        // Empty even when the tenant HAS a federation: Stages 1–6 are
+        // non-federated, and claiming otherwise would invite the solver to
+        // reason about shared resources this snapshot does not carry.
+        federationId: '',
+        timeGrid: toWireTimeGrid(grid, tenant.timezone),
+        calendar,
+        rooms,
+        persons,
+        groups,
+        offerings,
+        existingSessions: sessionInputs.map(toWireSession),
+        externalOccupancy: [],
+        constraints,
+        referenceSlot,
+    };
+
+    return {
+        input,
+        referenceSlot,
+        inputHash: hashInput(input),
+        report: {
+            excludedFederationRooms: federationRooms,
+            excludedFederationOfferings: federationOfferings,
+            multiRoomSessions: multiRoomSessionIds(sessionInputs),
+            droppedEquipmentQuantities,
+            skippedConstraints,
+            counts: {
+                rooms: rooms.length,
+                persons: persons.length,
+                groups: groups.length,
+                offerings: offerings.length,
+                existingSessions: input.existingSessions.length,
+                constraints: constraints.length,
+                weeks: calendar.weeks.length,
+            },
+        },
+    };
+}
+
+/**
+ * Hash of the ENCODED protobuf, not of a JSON rendering.
+ *
+ * Two inputs that encode identically are the same problem to the solver, which
+ * is exactly the question this answers. A JSON hash would also change with key
+ * order and with how BigInt happened to stringify.
+ */
+export function hashInput(input: SolverInput): string {
+    return createHash('sha256').update(SolverInput.encode(input).finish()).digest('hex');
+}
+
+export { TermEndedError };

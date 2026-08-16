@@ -240,6 +240,12 @@ export const OFFERING_ENTITY: ManageEntity = {
             min: 0,
             help: 'Leave unset to derive it from the assigned groups\' expected sizes.',
         },
+        {
+            key: 'allowOnline',
+            label: 'May be scheduled online',
+            type: 'boolean',
+            help: 'Lets the solver place this in a virtual room. Online delivery is a virtual room, not a session flag.',
+        },
         { key: 'isActive', label: 'Active', type: 'boolean' },
         { key: 'notes', label: 'Notes', type: 'textarea' },
     ],

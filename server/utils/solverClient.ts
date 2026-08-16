@@ -14,8 +14,7 @@ import type { SolverRunStatus } from '@prisma/client';
  *
  * The solver is STATELESS and never touches Postgres: everything it knows, this
  * app put in the request. Nothing in this file assembles that request — see
- * `solverPlaceholderInput.ts` for Stage 2's stand-in and Stage 3 for the real
- * thing.
+ * `solverInput.ts` for the assembly, which builds it from tenant data.
  *
  * Unary calls only, by the contract's design: the solver owns run state while a
  * run is in flight and this app polls, rather than holding a stream open.

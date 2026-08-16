@@ -17,8 +17,15 @@ import type { Session as WireSession } from '@mindcollaps/calendry-proto';
 /** Shape this needs from Prisma. Kept explicit so the query and the mapper agree. */
 export interface AppSessionRow {
     id: string;
-    tenantId: string | null;
-    federationId?: string | null;
+    /**
+     * NOT nullable, unlike Room/Equipment/Offering: `session` has no
+     * `federation_id` column. TAXONOMY.md carries an amendment making Session a
+     * third federation-shareable entity, but it is NOT implemented in this
+     * schema and is deferred to Stage 7 — so the wire's `owner` oneof only ever
+     * takes its tenant branch here. Typing it as optional invited exactly the
+     * mistake the compiler caught: reading a column that does not exist.
+     */
+    tenantId: string;
     offeringId: string;
     kindId: string;
     termWeek: number;
@@ -57,12 +64,10 @@ export function fromWireWeek(week: number): number {
 export function toWireSession(row: AppSessionRow): WireSession {
     return {
         id: row.id,
-        // The oneof owner. Stage 3 excludes federation-owned rows entirely, so
-        // in practice this is always the tenant branch; written as a conditional
-        // so a federation Session cannot be silently mislabelled if one appears.
-        ...(row.tenantId
-            ? { tenantId: row.tenantId }
-            : { federationId: row.federationId ?? '' }),
+        // The oneof owner, always the tenant branch — see the note on
+        // AppSessionRow.tenantId. When Stage 7 makes Session federation-
+        // shareable this becomes a real choice.
+        tenantId: row.tenantId,
         offeringId: row.offeringId,
         kind: row.kindKey,
         startSlot: {

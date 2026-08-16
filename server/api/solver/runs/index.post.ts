@@ -4,11 +4,7 @@ import { findPgCodeIsUniqueViolation } from '../../../utils/dbErrors';
 import { requirePermission } from '../../../utils/requirePermission';
 import { withRequestTenant } from '../../../utils/tenantDb';
 import { ACTIVE_RUN_STATUSES, fromWireU64, serializeRun, startRun, toWireU64 } from '../../../utils/solverClient';
-import {
-    PLACEHOLDER_INPUT_SOURCE,
-    PLACEHOLDER_OFFERING_IDS,
-    buildPlaceholderInput,
-} from '../../../utils/solverPlaceholderInput';
+import { TermEndedError, assembleSolverInput } from '../../../utils/solverInput';
 
 /**
  * Sentinel for "the one-active-run index rejected this insert".
@@ -30,14 +26,22 @@ const bodySchema = z.object({
     maxWallMillis: z.coerce.number().int().min(1).max(600_000).optional(),
     /** 0 = let the solver choose; whatever it picks is echoed back and stored. */
     seed: z.coerce.number().int().min(0).optional(),
+    /**
+     * Narrows what is actively placed. Omitted = every active Offering in the
+     * term. Everything outside the scope is hard-locked (LOCK_POLICY_HARD).
+     */
+    offeringIds: z.array(z.string().min(1)).optional(),
+    groupIds: z.array(z.string().min(1)).optional(),
 });
 
 /**
  * Start a solver run for one Term.
  *
- * ⚠ STAGE 2: the SolverInput is a hand-written placeholder, not this tenant's
- * data — see solverPlaceholderInput.ts. The run is real, the answer is not
- * about your timetable. Both the stored row and this response say so.
+ * The SolverInput is assembled from this tenant's real data (solverInput.ts).
+ * Whatever that assembly had to narrow — federation-owned rows excluded,
+ * multi-room Sessions flattened, constraints not yet mappable — comes back in
+ * `report` rather than being silently absorbed, because the solver cannot
+ * detect an omission and neither can the caller.
  */
 export default defineEventHandler(async (event) => {
     const body = await readValidatedBody(event, bodySchema.parse);
@@ -51,7 +55,7 @@ export default defineEventHandler(async (event) => {
      * second attempt while the call is in flight. The cost of that ordering is
      * the PENDING row below, which must be resolved whatever happens next.
      */
-    const created = await withRequestTenant(event, async (tx, identity) => {
+    const claimed = await withRequestTenant(event, async (tx, identity) => {
         await requirePermission(event, tx, 'solver.trigger');
 
         const term = await tx.term.findFirst({
@@ -65,24 +69,42 @@ export default defineEventHandler(async (event) => {
             throw createError({ statusCode: 404, statusMessage: 'Term not found.' });
         }
 
+        /**
+         * The snapshot is built INSIDE the claiming transaction so the run
+         * records the data it actually saw. Reading it afterwards would leave a
+         * window in which an edit lands between claim and read, and the stored
+         * input_hash would then describe a problem the solver never got.
+         */
+        const assembled = await assembleSolverInput(tx, {
+            tenantId: identity.tenantId,
+            termId: term.id,
+            now: new Date(),
+        });
+
+        const scope = {
+            offeringIds: body.offeringIds ?? assembled.input.offerings.map((offering) => offering.id),
+            groupIds: body.groupIds ?? [],
+            outsideScopePolicy: 'LOCK_POLICY_HARD',
+        };
+
         try {
-            return await tx.solverRun.create({
+            const run = await tx.solverRun.create({
                 data: {
                     tenantId: identity.tenantId,
                     termId: term.id,
                     status: 'PENDING',
-                    scope: {
-                        offeringIds: PLACEHOLDER_OFFERING_IDS,
-                        groupIds: [],
-                        outsideScopePolicy: 'LOCK_POLICY_HARD',
-                    },
+                    scope,
                     seed,
                     maxMoves: BigInt(maxMoves),
                     maxWallMillis,
-                    meta: { inputSource: PLACEHOLDER_INPUT_SOURCE },
+                    referenceSlot: assembled.referenceSlot as object,
+                    inputHash: assembled.inputHash,
+                    meta: { report: assembled.report as object },
                     requestedById: identity.actorPersonId,
                 },
             });
+
+            return { run, assembled, scope };
         } catch (error) {
             /**
              * 23505 here can only be solver_run_one_active_per_term: it is the
@@ -102,6 +124,23 @@ export default defineEventHandler(async (event) => {
             throw error;
         }
     }).catch(async (error) => {
+        /**
+         * "Now" is past the end of the term, so every Session would be excluded
+         * as past and the solver would return an empty placement — which is
+         * indistinguishable from a successful solve of an empty problem.
+         * Refusing is the honest answer.
+         *
+         * 422 rather than 400: the request is well-formed, the state it targets
+         * is not solvable.
+         */
+        if (error instanceof TermEndedError) {
+            throw createError({
+                statusCode: 422,
+                statusMessage: error.message,
+                data: { termEnd: error.termEnd },
+            });
+        }
+
         if (!(error instanceof ActiveRunConflict)) {
             throw error;
         }
@@ -130,19 +169,22 @@ export default defineEventHandler(async (event) => {
      * service is how connection pools get exhausted by one slow dependency —
      * and the transaction has already done its job (claiming the term).
      */
+    const { run: created, assembled, scope } = claimed;
+
     try {
         const response = await startRun({
-            input: buildPlaceholderInput(created.tenantId, created.termId),
+            input: assembled.input,
             scope: {
-                offeringIds: PLACEHOLDER_OFFERING_IDS,
-                groupIds: [],
+                offeringIds: scope.offeringIds,
+                groupIds: scope.groupIds,
                 outsideScopePolicy: LockPolicy.LOCK_POLICY_HARD,
             },
             budget: { maxWallMillis: toWireU64(maxWallMillis), maxMoves: toWireU64(maxMoves) },
             seed: toWireU64(seed),
-            // Stage 2 sends none. Idempotency needs a key derived from the real
-            // input snapshot to mean anything, and there is no real snapshot yet.
-            idempotencyKey: '',
+            // Now meaningful: the hash identifies the PROBLEM, so a retry of the
+            // same snapshot at the same seed returns the same run rather than
+            // launching a second one.
+            idempotencyKey: `${assembled.inputHash}:${seed}`,
         });
 
         const updated = await withRequestTenant(event, (tx) => tx.solverRun.update({
@@ -161,7 +203,7 @@ export default defineEventHandler(async (event) => {
 
         setResponseStatus(event, 201);
 
-        return { run: serializeRun(updated), placeholderInput: true };
+        return { run: serializeRun(updated), report: assembled.report };
     } catch (error) {
         /**
          * THE TRAP THIS EXISTS FOR: the row is PENDING, which the one-active-run

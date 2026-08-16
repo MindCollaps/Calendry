@@ -32,7 +32,8 @@
     "seed:demo": "bun run scripts/seed-demo-schedule.ts",
     "reset:password": "bun run scripts/reset-password.ts",
     "grant:permissions": "bun run scripts/grant-permissions.ts",
-    "solver:smoke": "bun run scripts/solver-smoke.ts"
+    "solver:smoke": "bun run scripts/solver-smoke.ts",
+    "create:account": "bun run scripts/create-account.ts"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",

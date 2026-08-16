@@ -34,7 +34,7 @@ export default defineEventHandler(async (event) => {
     }
 
     if (isTerminal(run.status) || !run.externalRunId) {
-        return { run: serializeRun(run), polled: false, placeholderInput: true };
+        return { run: serializeRun(run), polled: false };
     }
 
     try {
@@ -55,7 +55,7 @@ export default defineEventHandler(async (event) => {
             },
         }));
 
-        return { run: serializeRun(updated), polled: true, placeholderInput: true };
+        return { run: serializeRun(updated), polled: true };
     } catch (error) {
         /**
          * A poll failure is NOT a run failure — the run may well still be going.
@@ -73,7 +73,6 @@ export default defineEventHandler(async (event) => {
                 polled: false,
                 stale: true,
                 solverUnreachable: error.message,
-                placeholderInput: true,
             };
         }
 

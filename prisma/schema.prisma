@@ -676,6 +676,12 @@ model Offering {
   /// Minimum room capacity. Nullable — derived from Group size when absent.
   requiredCapacity Int? @map("required_capacity")
 
+  /// May the solver place this Offering in a VIRTUAL Room? Not "is this
+  /// online" — online delivery is a virtual Room, not a Session flag
+  /// (TAXONOMY.md §2). This is permission for the solver to choose one.
+  /// False by default: opting into online delivery is a tenant decision.
+  allowOnline Boolean @default(false) @map("allow_online")
+
   isActive  Boolean  @default(true) @map("is_active")
   notes     String?
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)

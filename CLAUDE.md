@@ -376,6 +376,26 @@ replayable produces a different answer and blames the wrong thing.
 `StartRunResponse.seed` echoes the seed actually used (0 = solver picks one), so
 a run is reproducible even when the caller did not choose the seed.
 
+### Idempotency: the key is `<inputHash>:<seed>`
+
+`POST /api/solver/runs` sends a SHA-256 of the ENCODED `SolverInput` plus the
+seed as `StartRunRequest.idempotency_key`, so **a repeated start against
+unchanged data returns the SAME run rather than launching a second one.**
+Observed accidentally and then confirmed deliberately: two consecutive
+assemblies of the demo tenant produced an identical hash and the solver handed
+back the same `run_id`.
+
+Two things to know before changing it:
+
+- The hash is over the encoded protobuf, not a JSON rendering. Two inputs that
+  encode identically are the same problem to the solver, which is exactly the
+  question being asked; a JSON hash would also move with key order and with how
+  BigInt happened to stringify.
+- Anything that deliberately changes the problem MUST change the key, or the
+  solver returns the earlier run and the new one is never observed. This bit
+  during Stage 3 verification: a stress variant reused the key and silently got
+  the previous, easy run back.
+
 ### Both of the above are now CONFIRMED, not just designed
 
 Measured in Stage 1 against a live `calendry-solver`, not inferred from the
@@ -400,7 +420,7 @@ proto:
 |---|---|
 | ~~1~~ | **DONE.** Package wiring (`bunfig.toml` auth), `@mindcollaps/calendry-proto@0.2.0` + `@grpc/grpc-js` installed, real StartRun→GetStatus round trip proven against a live solver. `scripts/solver-smoke.ts` is the throwaway probe — delete it when Stage 2 lands a real client. |
 | ~~2~~ | **DONE.** `solver_run` table + `solver_run_one_active_per_term` partial unique index; `/api/solver/runs` (POST/GET/`:id`/`:id/cancel`) replacing the deleted `/api/solver/generations` stub. Input is still the placeholder. |
-| **3** | Real `SolverInput` assembly from Prisma, including computing `reference_slot` — mapping "now" onto the tenant's academic calendar so past Sessions are correctly excluded. |
+| **3** | Real `SolverInput` assembly from Prisma. **3a/3c and 3b/3e DONE** — calendar, slot arithmetic, entities, wire-up, placeholder deleted, `RUNNING → CANCELLED` verified. **3d remains**: constraint mapping, the three missing parameter sets, and the `ManageWeekdayPicker` extraction. |
 | 4 | Polling cadence and its implementation. |
 | 5 | Applying results into a real `Generation` + `Session` rows, per warn-and-allow above. |
 | 6 | UI: trigger, status/progress, review-before-apply. |
@@ -433,14 +453,33 @@ Two traps found while building it, both worth not rediscovering:
 - **ts-proto emits `uint64` as `string`, not bigint.** `toWireU64` /
   `fromWireU64` in `solverClient.ts` are the only place that conversion happens.
 
-**TRACKED FOLLOW-UP — the `RUNNING → CANCELLED` transition is UNVERIFIED.**
-`CancelRun` is exercised and the already-terminal and never-acknowledged paths
-both work, so cancel *appears* to work from every route that was tested. But the
-Stage 2 placeholder input converges in ~0 milliseconds, so no run was ever
-interruptible: the transition from a genuinely in-flight run to `CANCELLED` has
-never actually happened. Stage 3 sends real data, which will make runs slow
-enough to interrupt — verify it then, and do not treat the passing cancel tests
-as covering it.
+**`RUNNING → CANCELLED` — RESOLVED in Stage 3b/3e.** It was tracked here through
+Stage 2 because `CancelRun`'s already-terminal and never-acknowledged paths both
+passed, so cancel *appeared* to work from every route tested, while the run that
+matters — a genuinely in-flight one — had never been interrupted.
+
+Now verified twice: directly against the solver, and through
+`POST /api/solver/runs/:id/cancel` (`RUNNING`, 6.2M moves, objective 1095 →
+`cancelled=true` → `CANCELLED`).
+
+Note what it took, because it will recur: the demo tenant's REAL data still
+converges in ZERO moves — 48 sessions into 760 slots is not a search problem —
+so the transition only became observable after demand was raised far above
+capacity. Anything that needs to watch a run in flight must construct that
+deliberately.
+
+### Tracked gap: equipment QUANTITY cannot cross the wire
+
+`RoomEquipment.quantity` and `OfferingEquipment.quantity` both exist — "this lab
+has 24 workstations", "this offering needs 24". The proto carries
+`Room.feature_tags` and `Offering.required_room_features` as plain string lists,
+so both become presence-only: "has `workstation`", "needs `workstation`".
+
+The solver therefore cannot reason about counts, and a 12-seat lab satisfies a
+24-workstation requirement. `assembleSolverInput` counts the dropped quantities
+and returns them in its report rather than narrowing quietly. Same shape of fix
+as the multi-room gap below: either the proto grows a quantity, or the app
+accepts presence-only semantics deliberately.
 
 ### Tracked gap: a Session with more than one Room cannot cross the wire
 
@@ -468,6 +507,37 @@ does not connect them, and nothing flags it.
 A manual edit can therefore create a real person-level clash that the UI reports
 as clean. Correctness gap, not performance. Scheduled for Stage 7; do not treat
 the existing lecturer check as covering it.
+
+### `bun run create:account` — adding an account to an EXISTING tenant
+
+`provision:tenant` creates a tenant and its first admin. Nothing could add a
+SECOND account to a tenant that already exists, which is why `vic@demo.local`
+became a hand-inserted SQL artifact and why verification work kept borrowing —
+and resetting — the real admin's credential twice over.
+
+    bun run create:account -- --tenant test --email someone@example.edu \
+        --name "Given Family" [--role tenant-admin] [--password …]
+
+Owner connection, audited to stdout, same CLI-not-endpoint reasoning as
+`provision:tenant` and `reset:password`. An email that already has an Account is
+REUSED rather than duplicated — one credential acting in several tenants through
+`account_person` is the point of a tenant-independent login — and its password is
+left untouched.
+
+`verify@calendry.local` in the `test` tenant is the dedicated HTTP-verification
+account. Use it for route testing rather than a human's credential.
+`vic@demo.local` can now be recreated through this path whenever that tracked
+cleanup happens.
+
+### CONSTRAINT DATA ODDITY to resolve in Stage 3d
+
+The `test` tenant has **two enabled `minimize_exam_week_sessions` constraints**,
+weights 5 and 10, both with empty `params` and no scope rows. That is either a
+duplicate or an intent to scope them differently by `kind` — `ConstraintConfig`
+carries `applies_to_kinds`, which would make two instances of one type
+meaningful. Resolve it in 3d rather than carrying it forward: right now they are
+both skipped for want of parameters, so the ambiguity is invisible, and once
+scoping lands they would both be sent and double-count.
 
 ### Step 14: AccessRole management has no UI and no API
 

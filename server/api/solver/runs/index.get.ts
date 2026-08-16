@@ -46,7 +46,6 @@ export default defineEventHandler(async (event) => {
         return {
             runs: rows.map(serializeRun),
             active: active.map(serializeRun),
-            placeholderInput: true,
         };
     });
 });
