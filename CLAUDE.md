@@ -399,12 +399,62 @@ proto:
 | Stage | Scope |
 |---|---|
 | ~~1~~ | **DONE.** Package wiring (`bunfig.toml` auth), `@mindcollaps/calendry-proto@0.2.0` + `@grpc/grpc-js` installed, real StartRun→GetStatus round trip proven against a live solver. `scripts/solver-smoke.ts` is the throwaway probe — delete it when Stage 2 lands a real client. |
-| **2** | `solver_run` schema; concurrency rule — **one active run per term per tenant**; real StartRun/GetStatus/CancelRun API surface. |
-| 3 | Real `SolverInput` assembly from Prisma, including computing `reference_slot` — mapping "now" onto the tenant's academic calendar so past Sessions are correctly excluded. |
+| ~~2~~ | **DONE.** `solver_run` table + `solver_run_one_active_per_term` partial unique index; `/api/solver/runs` (POST/GET/`:id`/`:id/cancel`) replacing the deleted `/api/solver/generations` stub. Input is still the placeholder. |
+| **3** | Real `SolverInput` assembly from Prisma, including computing `reference_slot` — mapping "now" onto the tenant's academic calendar so past Sessions are correctly excluded. |
 | 4 | Polling cadence and its implementation. |
 | 5 | Applying results into a real `Generation` + `Session` rows, per warn-and-allow above. |
 | 6 | UI: trigger, status/progress, review-before-apply. |
 | 7 | Federation support (deferred from 1–6), **and** closing a cross-repo gap found during solver work: this app's own manual-edit evaluator is **missing a PersonDoubleBooking check** — see below. |
+
+### What Stage 2 established, and the one path it could not test
+
+Three behaviours were verified against a live solver rather than reasoned about:
+
+- **Concurrency is enforced by the database.** Three simultaneous POSTs to the
+  same term returned one 201 and two 409s naming the winner. The rule is the
+  partial unique index, not a `findFirst` — two parallel requests would both
+  pass an application check and both insert.
+- **A failed StartRun resolves its own row.** Solver down → 502, row `FAILED`,
+  **zero** active runs. The row is written as `PENDING` *before* StartRun so the
+  index can reject a concurrent second attempt during the call, which creates
+  the obligation to resolve it; otherwise a solver outage blocks that term until
+  someone edits the database by hand.
+- **A poll failure is deliberately NOT a run failure.** `GET /runs/:id` with the
+  solver down leaves the status untouched and returns `stale: true`. Marking it
+  `FAILED` would destroy a live run's record *and* free the index for a second
+  concurrent run.
+
+Two traps found while building it, both worth not rediscovering:
+
+- **A 23505 aborts the Postgres transaction.** Nothing may query it afterwards.
+  Looking up the conflicting row inside the same transaction returned
+  `500 current transaction is aborted` instead of a clean 409 — and only a
+  genuinely *parallel* test surfaced it; a sequential one passed.
+- **ts-proto emits `uint64` as `string`, not bigint.** `toWireU64` /
+  `fromWireU64` in `solverClient.ts` are the only place that conversion happens.
+
+**TRACKED FOLLOW-UP — the `RUNNING → CANCELLED` transition is UNVERIFIED.**
+`CancelRun` is exercised and the already-terminal and never-acknowledged paths
+both work, so cancel *appears* to work from every route that was tested. But the
+Stage 2 placeholder input converges in ~0 milliseconds, so no run was ever
+interruptible: the transition from a genuinely in-flight run to `CANCELLED` has
+never actually happened. Stage 3 sends real data, which will make runs slow
+enough to interrupt — verify it then, and do not treat the passing cancel tests
+as covering it.
+
+### Tracked gap: a Session with more than one Room cannot cross the wire
+
+`session_room` is a join table, so the app models a Session in several Rooms at
+once. The proto's `Session` and `PlacedSession` both carry a single `room_id`.
+A multi-room Session therefore cannot be fully represented in either direction:
+the input mapper sends the first room and reports the rest, and Stage 5 will
+face the same narrowing coming back.
+
+Not urgent — the demo tenant has none, and `multiRoomSessionIds()` in
+`solverSessions.ts` reports any that appear rather than silently dropping them.
+But it is a real expressiveness limit, not an implementation shortcut: closing
+it means either a proto change (repeated `room_id`) or a decision that Calendry
+Sessions occupy exactly one Room. Do not "fix" it by quietly picking a room.
 
 ### Tracked gap: the manual-edit evaluator misses person clashes across groups
 

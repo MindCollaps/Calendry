@@ -114,6 +114,16 @@ model SolverRun {
   /// rather than assembled from tenant data.
   meta Json @default("{}")
 
+  /// The {week, day, block} that "now" mapped to when this run was started.
+  /// Stored because it is derived from the clock and therefore the one input a
+  /// replay cannot reconstruct — without it the determinism guarantee is
+  /// quietly false. Written by Stage 3.
+  referenceSlot Json? @map("reference_slot")
+
+  /// SHA-256 of the serialized SolverInput. Makes "did these two runs see the
+  /// same problem?" answerable instead of assumed.
+  inputHash String? @map("input_hash")
+
   requestedById String?   @map("requested_by_id")
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   startedAt     DateTime? @map("started_at") @db.Timestamptz(3)
