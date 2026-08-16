@@ -124,6 +124,19 @@ model SolverRun {
   /// same problem?" answerable instead of assumed.
   inputHash String? @map("input_hash")
 
+  /// When the background poller should next ask the solver about this run.
+  /// Cadence as DATA: it survives restarts and makes "why is this stuck?"
+  /// answerable with a query. Null once the run is terminal.
+  nextPollAt DateTime? @map("next_poll_at") @db.Timestamptz(3)
+
+  /// The solver's SolverOutput, captured the moment the run went terminal.
+  ///
+  /// Captured eagerly because the solver keeps runs in an in-memory registry
+  /// with no persistence — a restart loses the answer. Storing it here makes
+  /// applying it (Stage 5) a database→database transform that cannot fail
+  /// because a service bounced.
+  result Json? @db.JsonB
+
   requestedById String?   @map("requested_by_id")
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   startedAt     DateTime? @map("started_at") @db.Timestamptz(3)

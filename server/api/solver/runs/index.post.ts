@@ -198,6 +198,9 @@ export default defineEventHandler(async (event) => {
                 // when the request was 0.
                 seed: fromWireU64(response.seed),
                 startedAt: new Date(),
+                // The background poller picks it up from here; without this the
+                // run would only ever advance if someone opened its page.
+                nextPollAt: new Date(Date.now() + 500),
             },
         }));
 

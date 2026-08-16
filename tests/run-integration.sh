@@ -22,6 +22,9 @@ export MIGRATION_DATABASE_URL="$TEST_MIGRATION_DATABASE_URL"
 # so an IPv4 literal never connects.
 export TEST_BASE_URL="http://localhost:${APP_PORT}"
 export NODE_ENV=development
+# The background solver poller must not run during the suites: it would sweep
+# the fixture tenants concurrently with their own teardown/seed cycles.
+export CALENDRY_SOLVER_POLL=off
 
 echo "Starting Nuxt on ${APP_PORT}..."
 ./node_modules/.bin/nuxt dev --port "$APP_PORT" >/tmp/calendry-test-server.log 2>&1 &

@@ -101,11 +101,30 @@ third exception is a bug.
    Where auth genuinely needs tenant-scoped data (resolving a session's
    Person to its Tenant), it goes through the two `SECURITY DEFINER`
    functions `calendry_internal.session_identity()` and
-   `calendry_internal.account_identities()`. These are the **only** RLS-bypassing code
-   paths in the system. Both are parameterised solely by a secret the caller
-   already holds and neither accepts a tenant id, so neither can be coaxed
-   into enumerating another tenant. Do not add a third without a comparably
-   strong reason.
+   `calendry_internal.account_identities()`. Both are parameterised solely by a
+   secret the caller already holds and neither accepts a tenant id, so neither
+   can be coaxed into enumerating another tenant.
+
+3. **The background solver poller.** `calendry_internal.tenants_with_due_solver_runs()`
+   (Stage 4). Added under the same rule as the two above, for the same reason:
+   the operation structurally sits OUTSIDE the tenant-request model rather than
+   being made easier by skipping it. Auth must read a session *before the tenant
+   is known*; the poller runs *when nobody is logged in at all*, so
+   `current_tenant_id()` is NULL and the app role sees zero rows in both
+   `solver_run` and `tenant` — fail-closed working exactly as designed, and
+   leaving a cross-tenant job unable to see the work it exists to do.
+
+   What keeps it narrow: it returns **tenant ids only** — no run rows, no
+   scopes, no inputs, no results — and takes **no parameters**, so it cannot be
+   steered at a chosen tenant. Everything the poller then does happens inside an
+   ordinary `withTenant()` transaction under RLS, including the claim and every
+   write. Widening it to return the runs themselves was considered and rejected:
+   it would move the atomic claim into SQL and carry run data across the
+   boundary to save one round trip per tenant per tick.
+
+These three are the **only** RLS-bypassing code paths in the system. Do not add
+a fourth without a comparably strong reason — and "the query is awkward
+otherwise" is not one.
 - **Nested Groups propagate conflicts.** A booking conflict on a parent
   Group blocks its descendants and vice versa. Availability checks must
   walk the ancestor/descendant closure, not do a flat lookup. See
@@ -421,7 +440,7 @@ proto:
 | ~~1~~ | **DONE.** Package wiring (`bunfig.toml` auth), `@mindcollaps/calendry-proto@0.2.0` + `@grpc/grpc-js` installed, real StartRun→GetStatus round trip proven against a live solver. `scripts/solver-smoke.ts` is the throwaway probe — delete it when Stage 2 lands a real client. |
 | ~~2~~ | **DONE.** `solver_run` table + `solver_run_one_active_per_term` partial unique index; `/api/solver/runs` (POST/GET/`:id`/`:id/cancel`) replacing the deleted `/api/solver/generations` stub. Input is still the placeholder. |
 | **3** | Real `SolverInput` assembly from Prisma. **3a/3c and 3b/3e DONE** — calendar, slot arithmetic, entities, wire-up, placeholder deleted, `RUNNING → CANCELLED` verified. **3d remains**: constraint mapping, the three missing parameter sets, and the `ManageWeekdayPicker` extraction. |
-| 4 | Polling cadence and its implementation. |
+| ~~4~~ | **DONE.** Background poller (`server/plugins/solverPoller.ts`) owns advancing runs and capturing results; on-demand `GET /runs/:id` is latency only. Adaptive cadence, `FOR UPDATE SKIP LOCKED` claim, NOT_FOUND→FAILED. |
 | 5 | Applying results into a real `Generation` + `Session` rows, per warn-and-allow above. |
 | 6 | UI: trigger, status/progress, review-before-apply. |
 | 7 | Federation support (deferred from 1–6), **and** closing a cross-repo gap found during solver work: this app's own manual-edit evaluator is **missing a PersonDoubleBooking check** — see below. |
@@ -468,6 +487,55 @@ so the transition only became observable after demand was raised far above
 capacity. Anything that needs to watch a run in flight must construct that
 deliberately.
 
+### Stage 4: how polling actually works, and three things worth not relearning
+
+**The background poller owns correctness; on-demand polling owns latency.**
+`GET /api/solver/runs/:id` exists so someone watching gets a fast answer, but
+nothing about a run reaching a terminal state may depend on a human keeping a
+tab open. Both call the same `pollSolverRun()`, so they cannot disagree about
+what a status means.
+
+**Results are captured the moment a run goes terminal**, not when someone asks
+to apply them. The solver's run registry is an in-memory map with no persistence
+and no eviction, so "I'll fetch it later" is a promise a restart breaks.
+`solver_run.result` makes Stage 5 a database→database transform that cannot fail
+because a service bounced.
+
+**NOT_FOUND and UNAVAILABLE mean opposite things** and the distinction is the
+sharpest edge in Stage 4:
+
+- `NOT_FOUND` (gRPC 5) — the solver restarted and lost the run. Terminal and
+  unrecoverable: the row is marked `FAILED` with that reason, which also frees
+  the one-active-run index for that term.
+- anything else, including `UNAVAILABLE` (14) — transient. The row is left
+  **completely untouched** and the caller is told `stale: true`. Marking it
+  failed would destroy a live run's record on a blip *and* let a second
+  concurrent run start against the same term.
+
+`classifyPollFailure()` errs toward `unreachable` for unrecognised codes: the
+cost of being wrong that way is a stale row, the other way is a destroyed one.
+
+**Claiming is a lease, not a lock.** The original design used a session-scoped
+`pg_try_advisory_lock` to elect a single poller. That was wrong twice over and
+was caught before building: session locks belong to a CONNECTION and Prisma
+pools connections, so the "leader" would not reliably hold anything; and holding
+it across the gRPC calls would keep a transaction open across a network call —
+exactly what Stage 2 refused to do for StartRun.
+
+What actually works: a short transaction pushes `next_poll_at` into the future
+for the rows it takes, using `FOR UPDATE SKIP LOCKED`, so concurrent instances
+take **disjoint** sets rather than serialising. `pg_try_advisory_xact_lock`
+remains, scoped tightly around the claim and released at COMMIT before any
+network call, purely to stop a same-tenant stampede. Verified: four concurrent
+claimers, six due runs, zero duplicate claims, and the work becomes claimable
+again once the lease expires — so an instance dying mid-poll strands nothing.
+
+**One consequence to expect:** during a solver outage the effective retry
+interval is the 30s claim lease, not the adaptive cadence, because a failed poll
+deliberately writes nothing at all. A run therefore takes up to ~30s after the
+solver returns to resolve. That is backoff, not a bug, but it surprised me while
+testing and will surprise the next person.
+
 ### Tracked gap: equipment QUANTITY cannot cross the wire
 
 `RoomEquipment.quantity` and `OfferingEquipment.quantity` both exist — "this lab
@@ -494,6 +562,18 @@ Not urgent — the demo tenant has none, and `multiRoomSessionIds()` in
 But it is a real expressiveness limit, not an implementation shortcut: closing
 it means either a proto change (repeated `room_id`) or a decision that Calendry
 Sessions occupy exactly one Room. Do not "fix" it by quietly picking a room.
+
+### Cross-repo note: calendry-solver's run registry grows without bound
+
+The solver keeps runs in an in-memory `HashMap` with **no TTL and no eviction**,
+so every run ever started stays resident until the process restarts. Not urgent
+at current volumes, and not this repo's code to fix — but it is an unbounded
+growth path, and the same absence of persistence is why this app captures
+results eagerly (above) and treats NOT_FOUND as terminal.
+
+**This should also get a line in calendry-solver's own CLAUDE.md** whenever that
+repo is next touched; recording it only here means the repo that can fix it is
+the one repo that does not know.
 
 ### Tracked gap: the manual-edit evaluator misses person clashes across groups
 

@@ -1,81 +1,46 @@
 import { requirePermission } from '../../../utils/requirePermission';
 import { withRequestTenant } from '../../../utils/tenantDb';
-import {
-    SolverUnavailableError,
-    fromWireU64,
-    getStatus,
-    isTerminal,
-    serializeRun,
-    toRunStatus,
-} from '../../../utils/solverClient';
+import { isTerminal, serializeRun } from '../../../utils/solverClient';
+import { pollSolverRun } from '../../../utils/solverPolling';
 
 /**
  * Status of one run.
  *
- * PULL-ONLY: this calls the solver when asked and writes the snapshot back.
- * There is no background poller — cadence is Stage 4 by the staged plan, and
- * inventing one here would prejudge it.
+ * ON-DEMAND polling, for latency: someone watching a run gets a fresh answer
+ * immediately rather than waiting for the background poller's next tick. It is
+ * NOT the mechanism that guarantees a run reaches a terminal state — that is
+ * `server/plugins/solverPoller.ts`, because nothing about correctness may
+ * depend on a human keeping a tab open.
+ *
+ * Both paths go through `pollSolverRun`, so the meaning of a status, of a
+ * NOT_FOUND, and of an unreachable solver cannot drift between them.
  *
  * A terminal run is answered from the database without touching the solver: its
- * state cannot change again, and the solver is not required to remember a run
- * forever.
+ * state cannot change again, and the solver is not required to remember it.
  */
 export default defineEventHandler(async (event) => {
     const id = getRouterParam(event, 'id');
 
-    const run = await withRequestTenant(event, async (tx, identity) => {
+    return withRequestTenant(event, async (tx, identity) => {
         await requirePermission(event, tx, 'solver.trigger');
 
-        return tx.solverRun.findFirst({ where: { id, tenantId: identity.tenantId } });
-    });
+        const run = await tx.solverRun.findFirst({ where: { id, tenantId: identity.tenantId } });
 
-    if (!run) {
-        throw createError({ statusCode: 404, statusMessage: 'Not found.' });
-    }
-
-    if (isTerminal(run.status) || !run.externalRunId) {
-        return { run: serializeRun(run), polled: false };
-    }
-
-    try {
-        const status = await getStatus(run.externalRunId, false);
-        const mapped = toRunStatus(status.status);
-
-        const updated = await withRequestTenant(event, (tx) => tx.solverRun.update({
-            where: { id: run.id },
-            data: {
-                status: mapped,
-                progress: status.progress,
-                bestObjective: status.bestObjective,
-                movesEvaluated: fromWireU64(status.movesEvaluated),
-                elapsedMillis: Number(status.elapsedMillis),
-                errorDetail: status.errorDetail || null,
-                lastPolledAt: new Date(),
-                ...(isTerminal(mapped) ? { finishedAt: new Date() } : {}),
-            },
-        }));
-
-        return { run: serializeRun(updated), polled: true };
-    } catch (error) {
-        /**
-         * A poll failure is NOT a run failure — the run may well still be going.
-         * Marking it FAILED here would destroy a live run's record on a blip,
-         * and the one-active-run index would then let a second run start
-         * alongside it. So the stored status is left alone and the caller is
-         * told the snapshot is stale.
-         *
-         * This is the deliberate asymmetry with StartRun, where a transport
-         * failure DOES mean the run never began.
-         */
-        if (error instanceof SolverUnavailableError) {
-            return {
-                run: serializeRun(run),
-                polled: false,
-                stale: true,
-                solverUnreachable: error.message,
-            };
+        if (!run) {
+            throw createError({ statusCode: 404, statusMessage: 'Not found.' });
         }
 
-        throw error;
-    }
+        if (isTerminal(run.status) || !run.externalRunId) {
+            return { run: serializeRun(run), polled: false };
+        }
+
+        const outcome = await pollSolverRun(tx, run);
+        const fresh = await tx.solverRun.findFirstOrThrow({ where: { id: run.id } });
+
+        return {
+            run: serializeRun(fresh),
+            polled: outcome.polled,
+            ...(outcome.stale ? { stale: true, solverUnreachable: outcome.detail } : {}),
+        };
+    });
 });

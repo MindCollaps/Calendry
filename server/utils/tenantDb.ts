@@ -1,6 +1,11 @@
 import type { Prisma } from '@prisma/client';
 import type { H3Event } from 'h3';
 import type { RequestIdentity } from './tenantResolver';
+// Explicit rather than relying on Nitro's auto-import: this module is also
+// loaded by scripts/ and by the background poller's verification, where the
+// auto-import does not exist and the failure is a bare "getPrisma is not
+// defined" from inside a function that looks unrelated.
+import { getPrisma } from './prisma';
 
 export type Tx = Prisma.TransactionClient;
 
