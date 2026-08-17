@@ -293,7 +293,7 @@ export const CONSTRAINT_ENTITY: ManageEntity = {
     permissionPrefix: 'constraint',
     label: 'Constraint',
     plural: 'Constraints',
-    icon: 'material-symbols:rule-outline',
+    icon: 'material-symbols:checklist',
     description: 'The rules a timetable must respect, and the preferences it should weigh.',
     keywords: ['constraint', 'rule', 'hard', 'soft', 'penalty', 'conflict', 'policy'],
     title: (row) => String(row.name ?? 'Constraint'),

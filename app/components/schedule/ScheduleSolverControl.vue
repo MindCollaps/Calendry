@@ -59,7 +59,7 @@
             class="solver_status"
         >
             <Icon
-                name="svg-spinners:ring-resize"
+                name="material-symbols:progress-activity"
                 aria-hidden="true"
             />
             Starting…
@@ -73,7 +73,7 @@
             <div class="solver_live-head">
                 <span class="solver_status">
                     <Icon
-                        name="svg-spinners:ring-resize"
+                        name="material-symbols:progress-activity"
                         aria-hidden="true"
                     />
                     {{ state === 'cancelling' ? 'Cancelling…' : 'Solving' }}
