@@ -105,6 +105,14 @@
         </div>
 
         <div class="bar_group bar_group--end">
+            <!-- Hidden entirely without solver.trigger, not disabled: every
+                 solver route requires that permission, so there is no read-only
+                 version of this control to show. -->
+            <ScheduleSolverControl
+                v-if="canTriggerSolver && solverTermId"
+                :term-id="solverTermId"
+            />
+
             <label class="bar_field">
                 <span>Density</span>
                 <select
@@ -138,6 +146,7 @@
 </template>
 
 <script setup lang="ts">
+import ScheduleSolverControl from '~/components/schedule/ScheduleSolverControl.vue';
 import type { NamedRow, Term } from '~/composables/schedule';
 
 defineProps<{
@@ -148,6 +157,10 @@ defineProps<{
     totalWeeks: number;
     violationCount: number;
     canReadViolations: boolean;
+    canTriggerSolver: boolean;
+    /** Correct at first render, unlike the term-id model, which a
+        watchEffect seeds and SSR never flushes. */
+    solverTermId: string;
 }>();
 
 // Filter values are owned by useScheduleFilters() and reach this component as

@@ -36,6 +36,8 @@
             :total-weeks="data.totalWeeks.value"
             :violation-count="data.violations.value.length"
             :can-read-violations="data.canReadViolations.value"
+            :can-trigger-solver="canTriggerSolver"
+            :solver-term-id="data.resolvedTermId.value"
         />
 
         <p
@@ -164,6 +166,8 @@ useHead({ title: 'Schedule' });
 
 // UX only. Every one of these is re-checked server-side; a client that forges
 // them reaches an endpoint that returns 403.
+// Every solver route requires this one, so it gates the whole control.
+const canTriggerSolver = useHasPermission('solver.trigger');
 const canMove = useHasPermission('session.move');
 const canLock = useHasPermission('session.lock');
 

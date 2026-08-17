@@ -84,6 +84,19 @@ export function useScheduleData(filters: {
         }
     });
 
+    /**
+     * The term the fetch actually used, correct at FIRST RENDER.
+     *
+     * `filters.termId` is seeded by the watchEffect above, and Vue does not
+     * flush watchers during SSR — so on the server it is still `''` while the
+     * page renders. Anything that must be right server-side has to read this
+     * instead, or it renders as though no term existed. That is what hid the
+     * solver control on first paint until hydration corrected it.
+     */
+    const resolvedTermId = computed(() => (
+        filters.termId.value || reference.value?.resolvedTermId || ''
+    ));
+
     const terms = computed(() => reference.value?.terms ?? []);
     const groups = computed(() => reference.value?.groups ?? []);
     const rooms = computed(() => reference.value?.rooms ?? []);
@@ -152,7 +165,7 @@ export function useScheduleData(filters: {
     }
 
     return {
-        terms, groups, rooms, people,
+        terms, groups, rooms, people, resolvedTermId,
         term, totalWeeks, grid,
         allSessions, onGridSessions, offGridSessions,
         violations, violationsBySessionId,

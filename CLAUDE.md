@@ -174,6 +174,18 @@ otherwise" is not one.
     Fixed with an anchored `^\s*DATABASE_URL_HOST=`.
   - `concept-seed.mjs` exits 0 printing nothing when its state directory is
     wrong, which reads identically to "no findings".
+  - **Array truthiness (Stage 6b).** `GET /api/solver/runs` returns `active` as
+    an ARRAY, and `[]` is truthy, so `list.active ?? list.runs[0]` always
+    yielded the empty array. Run adoption therefore never fired and the toolbar
+    reported "no run in progress" — which is exactly what it says when there
+    genuinely is none. Fixed with `active?.[0]`. In JS the empty-collection case
+    needs `.length` or an index, never a bare truthiness test.
+  - **Absence that only proves the page failed (Stage 6b).** The first
+    permission check asserted the solver control was missing for a viewer — and
+    it was also missing for the admin, because of the SSR bug below. A test for
+    "affordance absent" must also assert the surrounding page RENDERED, or it
+    passes for the wrong reason. The fixed check reports
+    `schedule rendered=True solver control=False`.
 
   The counter-example to copy: provisioning against an unseeded database fails
   on a foreign key and writes nothing. Loud, specific, unmistakable.
@@ -249,6 +261,20 @@ otherwise" is not one.
 
   It survived a whole phase because the check counted `<input>` elements rather
   than reading their `value`. **Verify the content, not the presence.**
+
+  **Second instance, Stage 6b — same shape, different symptom.** `filters.termId`
+  is seeded by a `watchEffect` in `useScheduleData`, so during SSR it is still
+  `''` while the page renders. The solver control gated on it
+  (`v-if="canTriggerSolver && termIdModel"`) and was therefore absent from the
+  server-rendered page for a user who had every permission for it, appearing only
+  after hydration. Fixed by exposing `resolvedTermId` — which falls back to the
+  term the fetch actually used — and gating on that instead.
+
+  The generalisation, now that this has happened three times (edit forms,
+  `<select>`, this): **anything a watcher seeds is `undefined` at first render on
+  the server.** If a template branches on it, the server renders the wrong branch.
+  Prefer a `computed` derived from the awaited data over a watcher-assigned `ref`
+  whenever first render depends on the value.
 
 - **`<select>` needs `:selected` on its options, not just `:value` on the
   select.** `value` is a *property* of a select element, not an attribute, so
@@ -671,6 +697,49 @@ computed directly in SQL (18 colliding pairs / 36 sessions), the app evaluator
 (36 rows), and the solver (18 `GroupDoubleBooking` violations). Regression
 pinned by `tests/violations-group-conflict.test.ts`, which fails 6 of its 8 cases
 against the old logic.
+
+### Tracked gap: a terminal run whose result was never captured is stuck forever
+
+Found in Stage 6b verification. One run ended like this:
+
+    status=SUCCEEDED  generation_id=NULL  termination_reason=NULL  has_result=f
+
+A SUCCEEDED run is supposed to always produce a Generation (Stage 5). This one
+produced none, because `result` was never captured — and `createGenerationForRun()`
+correctly returns null when there is no result to propose.
+
+**What happens is confirmed; the root cause is not.** It coincided with cancelling
+a run that had *just* completed, so the `CancelRun` and the terminal
+`GetStatus(include_result=true)` overlapped. The plausible mechanism is that the
+cancel caused the solver to drop the finished run's result before the app asked
+for it, but that has not been proven and should not be assumed.
+
+**What IS proven is the recovery gap, which is the part that matters:**
+
+- `pollSolverRun()` deliberately records the terminal status even when the result
+  fetch throws (losing the transition would be worse — the run would look active
+  against a solver that has finished it, and the one-active-run index would block
+  that term).
+- **Nothing ever retries.** The background poller claims only
+  `PENDING/QUEUED/RUNNING`, and `GET /api/solver/runs/:id` short-circuits on
+  `isTerminal(run.status)` before polling. So a terminal row with no result is
+  never looked at again.
+
+The run is therefore permanently unusable: no result, no Generation, no way to
+get one, and the work the solver did is gone.
+
+Stage 6b surfaces this honestly rather than making it worse — `deriveState()` maps
+SUCCEEDED-without-a-Generation to the `failed` branch, so the UI says "The run
+failed" instead of hanging on a spinner or offering a Review link to nothing, and
+that case is unit-tested. But 6b does make the race *reachable from a button*,
+since a user can now press Cancel at exactly the wrong moment.
+
+**Scheduled as a small standalone fix AFTER 6c** — not folded into 6b or 6c. The
+likely shape is a recovery path for a terminal row with `result IS NULL AND
+external_run_id IS NOT NULL`, which the poller's active-only claiming does not
+currently cover. Note it must stay bounded: the solver may genuinely no longer
+have the result, so this needs an attempt limit and a terminal "result lost"
+state rather than retrying forever.
 
 ### Tracked gap: solver violations naming Sessions the solver invented
 
