@@ -44,6 +44,7 @@ const CLAIM_LEASE_MS = 30_000;
 
 export interface ClaimedRun {
     id: string;
+    tenantId: string;
     status: 'PENDING' | 'QUEUED' | 'RUNNING';
     externalRunId: string | null;
     startedAt: Date | null;
@@ -109,6 +110,7 @@ export async function claimDueRuns(tenantId: string, limit = 20): Promise<Claime
                   FOR UPDATE SKIP LOCKED
              )
          RETURNING id,
+                   tenant_id AS "tenantId",
                    status::text AS status,
                    external_run_id AS "externalRunId",
                    started_at AS "startedAt",

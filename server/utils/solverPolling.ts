@@ -1,6 +1,7 @@
 import type { SolverRunStatus } from '@prisma/client';
 import { SolverOutput } from '@mindcollaps/calendry-proto';
 import type { Tx } from './tenantDb';
+import { createGenerationForRun, shouldCreateGeneration } from './generationFromRun';
 import type { SolverUnavailableError } from './solverClient';
 import {
     fromWireU64,
@@ -79,6 +80,8 @@ export interface PollOutcome {
     status: SolverRunStatus;
     /** True when this poll moved the run to a terminal state. */
     becameTerminal: boolean;
+    /** Set when this poll also created the run's proposed Generation. */
+    generationId?: string | null;
     /** False when the solver could not be reached; the row was left untouched. */
     polled: boolean;
     stale?: boolean;
@@ -87,6 +90,7 @@ export interface PollOutcome {
 
 interface PollableRun {
     id: string;
+    tenantId: string;
     status: SolverRunStatus;
     externalRunId: string | null;
     startedAt: Date | null;
@@ -182,5 +186,31 @@ export async function pollSolverRun(tx: Tx, run: PollableRun): Promise<PollOutco
         },
     });
 
-    return { status: mapped, becameTerminal: terminal, polled: true };
+    /**
+     * The Generation is created HERE, by whichever path observed the terminal
+     * transition — not in the poller.
+     *
+     * It lived in the poller first, and the on-demand route silently stole the
+     * transition: a user who opened the run's page before the next tick moved
+     * it to SUCCEEDED, the poller then had nothing left to observe, and NO
+     * Generation was ever created. The result sat captured and unusable. Both
+     * callers share this function precisely so a terminal transition means the
+     * same thing either way.
+     */
+    let generationId: string | null = null;
+
+    if (terminal && shouldCreateGeneration(mapped)) {
+        const fresh = await tx.solverRun.findFirstOrThrow({ where: { id: run.id } });
+
+        generationId = fresh.generationId
+            ? null
+            : await createGenerationForRun(tx, {
+                tenantId: run.tenantId,
+                runId: run.id,
+                result: fresh.result,
+                requestedById: fresh.requestedById,
+            });
+    }
+
+    return { status: mapped, becameTerminal: terminal, polled: true, generationId };
 }

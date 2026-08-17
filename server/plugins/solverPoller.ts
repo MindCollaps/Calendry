@@ -68,6 +68,10 @@ export default defineNitroPlugin(() => {
                     if (outcome.becameTerminal) {
                         console.log(`[solver-poller] run ${run.id} → ${outcome.status}`
                             + (outcome.detail ? ` (${outcome.detail})` : ''));
+
+                        if (outcome.generationId) {
+                            console.log(`[solver-poller] run ${run.id} → generation ${outcome.generationId} (READY)`);
+                        }
                     }
                 } catch (error) {
                     console.error(`[solver-poller] run ${run.id} failed to poll:`, error);

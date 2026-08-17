@@ -173,7 +173,7 @@ export async function refreshViolations(tx: Tx, options: RefreshOptions): Promis
                     constraint.type as StructuralConstraintType,
                     seed,
                     other,
-                    { byRoom, byPerson, conflictSets },
+                    { byRoom, byPerson, byGroup, conflictSets },
                 );
 
                 if (!collision) {
@@ -194,39 +194,59 @@ export async function refreshViolations(tx: Tx, options: RefreshOptions): Promis
     await clearViolations(tx, tenantId, involvedIds, enabled.map((c) => c.id));
 
     for (const d of detected) {
-        await tx.constraintViolation.upsert({
-            where: { constraintId_sessionId: { constraintId: d.constraintId, sessionId: d.sessionId } },
-            create: {
-                tenantId,
-                constraintId: d.constraintId,
-                sessionId: d.sessionId,
-                severity: d.severity,
-                penalty: d.penalty,
-                detail: d.detail,
-                detectedByEventId,
-                generationId,
-            },
-            update: {
-                severity: d.severity,
-                penalty: d.penalty,
-                detail: d.detail,
-                detectedByEventId,
-                generationId,
-                detectedAt: new Date(),
-            },
+        /**
+         * find-then-write rather than `upsert`. Prisma cannot express a
+         * compound unique key containing NULLABLE columns, and this one is
+         * (constraint_id, session_id, offering_id) with NULLS NOT DISTINCT —
+         * a shape the schema language has no way to describe. The index still
+         * enforces uniqueness in the database; this is only how it is reached.
+         */
+        const existing = await tx.constraintViolation.findFirst({
+            where: { constraintId: d.constraintId, sessionId: d.sessionId, offeringId: null },
+            select: { id: true },
         });
+
+        if (existing) {
+            await tx.constraintViolation.update({
+                where: { id: existing.id },
+                data: {
+                    severity: d.severity,
+                    penalty: d.penalty,
+                    detail: d.detail,
+                    detectedByEventId,
+                    generationId,
+                    detectedAt: new Date(),
+                },
+            });
+        } else {
+            await tx.constraintViolation.create({
+                data: {
+                    tenantId,
+                    constraintId: d.constraintId,
+                    sessionId: d.sessionId,
+                    offeringId: null,
+                    severity: d.severity,
+                    penalty: d.penalty,
+                    detail: d.detail,
+                    detectedByEventId,
+                    generationId,
+                },
+            });
+        }
     }
 
     return detected.length;
 }
 
-function describeCollision(
+export function describeCollision(
     type: StructuralConstraintType,
     a: PlacedSession,
     b: PlacedSession,
     ctx: {
         byRoom: Map<string, string[]>;
         byPerson: Map<string, string[]>;
+        /** Each Session's DIRECTLY assigned Groups — never the closure. */
+        byGroup: Map<string, string[]>;
         conflictSets: Map<string, Set<string>>;
     },
 ): Prisma.InputJsonObject | null {
@@ -244,12 +264,36 @@ function describeCollision(
         }
 
         case 'no_double_booking_group': {
-            // Nested-group propagation: two Sessions collide when their conflict
-            // sets intersect, not merely when they share a directly assigned
-            // Group. A Cohort lecture and a child Seminar collide.
-            const setA = ctx.conflictSets.get(a.id) ?? new Set();
-            const setB = ctx.conflictSets.get(b.id) ?? new Set();
-            const shared = [...setA].filter((g) => setB.has(g));
+            /**
+             * Nested-group propagation, expanded on ONE side only.
+             *
+             * A Session booked for a Cohort blocks its child Seminars and vice
+             * versa (TAXONOMY.md §6), so one side must be widened to its
+             * ancestors and descendants. But the other side must be matched by
+             * IDENTITY, against the Groups actually assigned to it.
+             *
+             * Intersecting two EXPANDED sets — which this did until it was
+             * caught during Stage 5 — makes any two Groups sharing a common
+             * ancestor collide, however distantly related. Sibling subtrees each
+             * expand to include their shared root, so the intersection is
+             * non-empty even though neither is an ancestor or descendant of the
+             * other and no person is in both:
+             *
+             *     Seminar A1 → {Seminar A1, Class A, Informatics 2026}
+             *     Class B    → {Class B,            Informatics 2026}
+             *     ∩          = {Informatics 2026}   ← a false positive
+             *
+             * Against real demo data that produced 24 phantom violations on a
+             * schedule the solver — which gets this right — reported as clean.
+             *
+             * The test is symmetric in outcome despite looking one-sided: some
+             * Group of `a` is related to some Group of `b` exactly when the
+             * reverse holds. The reported ids are `b`'s own Groups, which is
+             * what a human needs to see rather than an inferred ancestor.
+             */
+            const closureA = ctx.conflictSets.get(a.id) ?? new Set<string>();
+            const directB = ctx.byGroup.get(b.id) ?? [];
+            const shared = [...new Set(directB)].filter((g) => closureA.has(g));
 
             return shared.length ? { reason: 'group_double_booked', groupIds: shared } : null;
         }
@@ -264,6 +308,11 @@ async function clearViolations(tx: Tx, tenantId: string, sessionIds: string[], c
         where: {
             tenantId,
             sessionId: { in: sessionIds },
+            // Scoped to session-shaped rows on purpose. `sessionId IN (...)`
+            // already excludes NULLs, so a solver-produced offering-scoped
+            // violation survives a manual-edit refresh — this evaluator has no
+            // opinion about those and must not silently clear them.
+            offeringId: null,
             ...(constraintIds.length ? { constraintId: { in: constraintIds } } : {}),
         },
     });

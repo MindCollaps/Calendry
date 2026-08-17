@@ -1,5 +1,7 @@
 import { z } from 'zod';
+import { SolverOutput } from '@mindcollaps/calendry-proto';
 import { mapDbErrors } from '../../../utils/dbErrors';
+import { materializeGeneration } from '../../../utils/generationMaterialize';
 import { appendEvent } from '../../../utils/sessionEvents';
 import { requirePermission } from '../../../utils/requirePermission';
 import { withRequestTenant } from '../../../utils/tenantDb';
@@ -20,6 +22,16 @@ const bodySchema = z.object({ reason: z.string().nullish() }).optional();
  *
  * Locked Sessions are left exactly as they are — the solver never overwrites a
  * lock, so neither does applying its output.
+ *
+ * STAGE 5 CHANGED WHAT THIS DOES. It used to only RE-BASELINE: stamp the new
+ * generation id onto existing Sessions and flip `is_current`. That was correct
+ * when every Session was placed by hand, but a SOLVER Generation carries
+ * placements that exist nowhere yet — they live in `solver_run.result` until
+ * this moment, precisely so review-before-apply reviews an unchanged schedule.
+ *
+ * So a solver Generation now MATERIALIZES first (create / move / delete), then
+ * re-baselines exactly as before. A manual or imported Generation has no run
+ * attached and takes the original path untouched.
  */
 export default defineEventHandler(async (event) => {
     const id = getRouterParam(event, 'id');
@@ -76,6 +88,31 @@ export default defineEventHandler(async (event) => {
                 });
             });
 
+            /**
+             * A solver Generation reaches its placements through the run that
+             * produced it. Nothing was copied onto the Generation itself — the
+             * payload can be megabytes and duplicating it would make the two
+             * copies able to disagree.
+             */
+            const run = await tx.solverRun.findFirst({
+                where: { tenantId: identity.tenantId, generationId: generation.id },
+                select: { id: true, termId: true, result: true, scope: true },
+            });
+
+            let materialized = null;
+
+            if (run?.result) {
+                const scope = (run.scope ?? {}) as { offeringIds?: string[] };
+
+                materialized = await mapDbErrors(() => materializeGeneration(tx, {
+                    tenantId: identity.tenantId,
+                    termId: run.termId,
+                    generationId: generation.id,
+                    output: SolverOutput.fromJSON(run.result),
+                    scopeOfferingIds: scope.offeringIds ?? [],
+                }));
+            }
+
             const rebased = await tx.session.updateMany({
                 where: { tenantId: identity.tenantId, isLocked: false },
                 data: { generationId: generation.id },
@@ -91,6 +128,10 @@ export default defineEventHandler(async (event) => {
                     previousVersion: previous?.version ?? null,
                     sessionsRebased: rebased.count,
                     sessionsSkippedLocked: lockedCount,
+                    // Still ONE event, not one per Session (see above). The
+                    // materialization counts ride along so a replay can see
+                    // what this apply actually did to the schedule.
+                    ...(materialized ? { materialized: { ...materialized } } : {}),
                 },
                 reason: body.reason,
             });
@@ -111,6 +152,7 @@ export default defineEventHandler(async (event) => {
                 generation: await tx.generation.findFirst({ where: { id: generation.id } }),
                 applied: rebased.count,
                 skippedLocked: lockedCount,
+                materialized,
                 event: logged,
                 alreadyCurrent: false,
             };

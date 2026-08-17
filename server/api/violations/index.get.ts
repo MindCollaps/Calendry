@@ -28,7 +28,18 @@ export default defineEventHandler(async (event) => {
         if (query.severity) where.severity = query.severity;
         if (query.sessionId) where.sessionId = query.sessionId;
         if (query.constraintId) where.constraintId = query.constraintId;
-        if (query.termId) where.session = { termId: query.termId };
+        /**
+         * A violation reaches a Term through EITHER its Session or its
+         * Offering. Filtering on `session` alone would silently drop every
+         * offering-scoped violation — which is precisely the ExactFrequency
+         * case the whole nullable-session change exists for.
+         */
+        if (query.termId) {
+            where.OR = [
+                { session: { termId: query.termId } },
+                { offering: { termId: query.termId } },
+            ];
+        }
 
         return tx.constraintViolation.findMany({
             where,
@@ -41,6 +52,7 @@ export default defineEventHandler(async (event) => {
                         dayOfWeek: true, blockIndex: true, isLocked: true,
                     },
                 },
+                offering: { select: { id: true, code: true, title: true, frequency: true } },
             },
         });
     });

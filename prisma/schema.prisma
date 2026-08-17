@@ -711,6 +711,7 @@ model Offering {
   equipment        OfferingEquipment[]
   sessions         Session[]
   constraintScopes ConstraintScope[]
+  violations       ConstraintViolation[]
 
   @@index([tenantId])
   @@index([federationId])
@@ -1077,7 +1078,15 @@ model ConstraintViolation {
   tenantId String @map("tenant_id")
 
   constraintId String @map("constraint_id")
-  sessionId    String @map("session_id")
+  /// Nullable: a violation may be about an OFFERING rather than a placed
+  /// Session. ExactFrequency ("needs 6, placed 4") has no session to name, and
+  /// that is exactly the case warn-and-allow was decided around. A CHECK
+  /// enforces that at least one of session_id / offering_id is present.
+  sessionId    String? @map("session_id")
+
+  /// Set for offering-scoped violations. Without it "constraint X is violated,
+  /// no session" says nothing actionable.
+  offeringId   String? @map("offering_id")
 
   severity ConstraintSeverity
 
@@ -1095,11 +1104,15 @@ model ConstraintViolation {
 
   tenant          Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   constraint      Constraint    @relation(fields: [constraintId], references: [id], onDelete: Cascade)
-  session         Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session         Session?      @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  offering        Offering?     @relation(fields: [offeringId], references: [id], onDelete: Cascade)
   detectedByEvent SessionEvent? @relation(fields: [detectedByEventId], references: [id], onDelete: SetNull)
   generation      Generation?   @relation(fields: [generationId], references: [id], onDelete: SetNull)
 
-  @@unique([constraintId, sessionId])
+  /// NULLS NOT DISTINCT in the migration — Postgres would otherwise treat
+  /// every offering-scoped row as unique against itself and duplicate on each
+  /// refresh. Prisma cannot express that, so the index lives in SQL.
+  @@unique([constraintId, sessionId, offeringId])
   @@index([tenantId, severity])
   @@index([sessionId])
   @@map("constraint_violation")

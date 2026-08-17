@@ -46,7 +46,15 @@ export interface ScheduleSession {
 
 export interface Violation {
     id: string;
-    sessionId: string;
+    /**
+     * Null for an OFFERING-scoped violation — ExactFrequency ("needs 6, placed
+     * 4") is about demand that was never placed, so there is no session to
+     * point at. Anything grouping by session must skip these rather than
+     * bucketing them under a falsy key.
+     */
+    sessionId: string | null;
+    offeringId?: string | null;
+    offering?: { id: string; code: string | null; title: string; frequency: number } | null;
     severity: 'HARD' | 'SOFT';
     detail: Record<string, unknown>;
     constraint: { id: string; type: string; name: string; severity: string };
@@ -127,6 +135,11 @@ export function violationsBySession(violations: Violation[]): Map<string, Violat
     const map = new Map<string, Violation[]>();
 
     for (const violation of violations) {
+        // Offering-scoped violations have no session and belong to no chip.
+        if (!violation.sessionId) {
+            continue;
+        }
+
         const list = map.get(violation.sessionId) ?? [];
 
         list.push(violation);
@@ -134,6 +147,11 @@ export function violationsBySession(violations: Violation[]): Map<string, Violat
     }
 
     return map;
+}
+
+/** Violations that are about unplaced demand rather than a placed Session. */
+export function offeringViolations(violations: Violation[]): Violation[] {
+    return violations.filter((violation) => !violation.sessionId);
 }
 
 /** Turns a violation's structured detail into something a human can act on. */

@@ -354,6 +354,16 @@ use. Not silently discarded, not auto-applied.
 `Generation.apply` still requires an explicit human action regardless of
 violation state — unchanged from existing behaviour.
 
+**A consequence, realised in Stage 5: `GenerationStatus.INFEASIBLE` is now
+effectively unused for solver output, and that is not an oversight.** Warn-and-
+allow means a SUCCEEDED run carrying residual hard violations is still `READY`
+and still applicable, and a run that never succeeded produces no Generation at
+all (`shouldCreateGeneration()` admits only SUCCEEDED — a Generation nobody can
+apply is noise in a list whose entire job is "what could I apply?", and
+`solver_run` already records what happened). The status stays in the enum for
+import and for a future solver that reports infeasibility as a first-class
+outcome. Nothing setting it is the design working, not a missing branch.
+
 This is parity with §3's manual-edit rule (hard-constraint violations warn, they
 do not block), and it matches what the wire protocol already says: `RunStatus`
 deliberately describes **the run's lifecycle, not the solution's quality**. The
@@ -441,7 +451,7 @@ proto:
 | ~~2~~ | **DONE.** `solver_run` table + `solver_run_one_active_per_term` partial unique index; `/api/solver/runs` (POST/GET/`:id`/`:id/cancel`) replacing the deleted `/api/solver/generations` stub. Input is still the placeholder. |
 | **3** | Real `SolverInput` assembly from Prisma. **3a/3c and 3b/3e DONE** — calendar, slot arithmetic, entities, wire-up, placeholder deleted, `RUNNING → CANCELLED` verified. **3d remains**: constraint mapping, the three missing parameter sets, and the `ManageWeekdayPicker` extraction. |
 | ~~4~~ | **DONE.** Background poller (`server/plugins/solverPoller.ts`) owns advancing runs and capturing results; on-demand `GET /runs/:id` is latency only. Adaptive cadence, `FOR UPDATE SKIP LOCKED` claim, NOT_FOUND→FAILED. |
-| 5 | Applying results into a real `Generation` + `Session` rows, per warn-and-allow above. |
+| ~~5~~ | **DONE.** `generationFromRun.ts` (poller creates a READY Generation on SUCCEEDED) + `generationMaterialize.ts` (create/move/unchanged/delete partition, violations onto `constraint_violation`). Verified both ways: a clean run applied end to end, and an over-constrained SUCCEEDED-with-23-violations run applied successfully. Fixed two pre-existing bugs it uncovered — see below. |
 | 6 | UI: trigger, status/progress, review-before-apply. |
 | 7 | Federation support (deferred from 1–6), **and** closing a cross-repo gap found during solver work: this app's own manual-edit evaluator is **missing a PersonDoubleBooking check** — see below. |
 
@@ -587,6 +597,108 @@ does not connect them, and nothing flags it.
 A manual edit can therefore create a real person-level clash that the UI reports
 as clean. Correctness gap, not performance. Scheduled for Stage 7; do not treat
 the existing lecturer check as covering it.
+
+Note this is the *under*-reporting half of a pair. The over-reporting half — the
+group check flagging unrelated Groups — was found and FIXED in Stage 5, below.
+They are the same function and opposite failure directions, but only this one is
+still open, and it stays open because it needs new capability (resolving Group
+membership down to people) rather than a correction to existing logic.
+
+### Stage 5: two pre-existing bugs it uncovered, both fixed
+
+Neither was introduced by Stage 5. Both had gone unnoticed for the same reason —
+nothing had ever exercised the code path — and both are the kind of thing
+CLAUDE.md's "guards must fail loudly or match exactly" rule exists to catch.
+
+**1. A Session with history could not be deleted at all.**
+
+`session_event.session_id` is `ON DELETE SET NULL`, chosen so an audit row
+outlives the Session it describes (the schema says exactly that in a comment).
+But `deny_mutation()` refused every `UPDATE OR DELETE` on `session_event` — and
+the FK's SET NULL *is* an UPDATE. So the schema's own referential action was
+rejected by the trigger guarding the same table:
+
+    DELETE FROM session WHERE id = <a session that has any event>;
+    ERROR: session_event is append-only; UPDATE is not permitted
+    CONTEXT: SQL statement "UPDATE ONLY public.session_event SET session_id = NULL ..."
+
+It survived because until Stage 5 **nothing in the codebase deleted a Session** —
+there is no `DELETE /api/sessions/:id`, and `materializeGeneration()` removing
+solver-rejected placements is the only such call. The first Stage 5 verification
+passed only because it happened to have `deleted: 0`.
+
+Fixed by `20260816180000_session_event_detach_on_session_delete`, which narrows
+the trigger to permit **exactly one shape**: an UPDATE that sets `session_id`
+and/or `counterpart_session_id` from a value to NULL with every other column
+byte-identical. Repointing either column at a *different* Session, changing any
+other column, a detach smuggled in alongside another column, a no-op UPDATE, and
+DELETE are all still refused — pinned by 11 tests in
+`tests/session-event-append-only.test.ts`. Event CONTENT stays immutable, which
+is the property §3 actually needs; only the pointer to a row that no longer
+exists may be cleared.
+
+`ON DELETE CASCADE` was rejected (it destroys the audit trail the log exists
+for) and so was `RESTRICT` (it contradicts the decision that unplaceable
+Sessions are removed rather than left at placements the solver refused).
+
+**2. `no_double_booking_group` flagged any two Groups under a shared root.**
+
+`describeCollision()` intersected the EXPANDED conflict closure of *both* Sessions.
+Every group expands to include its ancestors, so two groups sharing any common
+ancestor always intersected at that ancestor — however unrelated they were:
+
+    Seminar A1 → {Seminar A1, Class A, Informatics 2026}
+    Class B    → {Class B,            Informatics 2026}
+    ∩          = {Informatics 2026}   ← a false positive
+
+Class B is neither an ancestor nor a descendant of Seminar A1 (0 rows in
+`group_closure` either way) and no person is in both, so booking them
+concurrently is legitimate. TAXONOMY.md §6 propagation is ancestors *and*
+descendants — not "shares a root".
+
+Fixed by expanding **one** side and intersecting against the other side's
+DIRECTLY assigned groups by identity, mirroring the solver's own implementation.
+Detection stays symmetric; only the reported ids differ, and reporting `b`'s own
+Groups is what a human needs to see.
+
+Scale of the bug, measured on the over-constrained Stage 5 schedule: the old code
+would have flagged **390** sibling-only pairs on top of the 18 genuine ones. On
+the ordinary 48-Session demo schedule it produced **24 phantom violations** where
+the correct answer — and the solver's — is zero.
+
+Three independent sources now agree on the same timetable: a closure query
+computed directly in SQL (18 colliding pairs / 36 sessions), the app evaluator
+(36 rows), and the solver (18 `GroupDoubleBooking` violations). Regression
+pinned by `tests/violations-group-conflict.test.ts`, which fails 6 of its 8 cases
+against the old logic.
+
+### Tracked gap: solver violations naming Sessions the solver invented
+
+`SolverOutput.hard_violations` identifies Sessions by id, but for a Session the
+solver INVENTED the two id spaces in the same response do not agree:
+
+- `PlacedSession.session_id` is **empty** (953 of 993 placements in the Stage 5
+  over-constrained run).
+- the violation names it with a synthetic `"<offeringId>#<index>"` key
+  (`…-offering-6#19`), which appears **nowhere** in the placements.
+
+So there is no join key. The app cannot attach such a violation to the Session
+row it just created, because nothing links the synthetic id to the placement that
+produced it. Measured: of 36 session references across 18 `GroupDoubleBooking`
+violations, **7 resolved and 29 did not** — exactly the 29 that named invented
+Sessions.
+
+`materializeGeneration()` counts these in `violationsUnmapped` rather than
+dropping them silently, which is the right behaviour but not a fix. Closing it is
+a cross-repo change and belongs with the solver: either populate
+`PlacedSession.session_id` with the same synthetic key used in violations, or
+have violations reference placements by index into `sessions`. **Do not "fix" it
+by guessing a mapping from offering + slot.**
+
+In practice the loss is currently masked — `refreshViolations()` runs after
+materialize and re-derives the structural violations from the applied rows, so
+the group clashes end up recorded anyway. It would NOT be masked for any
+violation type the app's own evaluator cannot compute.
 
 ### `bun run create:account` — adding an account to an EXISTING tenant
 

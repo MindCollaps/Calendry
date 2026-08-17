@@ -122,6 +122,12 @@ export function useScheduleData(filters: {
         const map = new Map<string, Violation[]>();
 
         for (const violation of violations.value) {
+            // Skipped, not bucketed under '': an offering-scoped violation
+            // belongs to no chip on the grid.
+            if (!violation.sessionId) {
+                continue;
+            }
+
             const list = map.get(violation.sessionId) ?? [];
 
             list.push(violation);
