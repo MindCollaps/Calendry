@@ -44,7 +44,7 @@ export const SOLVER_OWNED_CONSTRAINT_TYPES = [
     'max_online_ratio_per_group',
     'minimize_first_block',
     'minimize_last_block',
-    'minimize_saturday',
+    'minimize_specifc_day',
     'minimize_high_ranking_rooms',
     'minimize_exam_week_sessions',
     'minimize_online_sessions',
@@ -241,7 +241,7 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
         params: [],
     },
     {
-        key: 'minimize_saturday',
+        key: 'minimize_specifc_day',
         wireField: 'minimizeDayUsage',
         label: 'Avoid particular days',
         description:

@@ -147,7 +147,7 @@ function buildVariant(typeKey: string, params: Record<string, unknown>): Record<
                 window: params.window === 'SHARE_WINDOW_PER_WEEK' ? 2 : 1,
             };
 
-        case 'minimize_saturday':
+        case 'minimize_specifc_day':
             return { days: (params.days as number[]).map(Number).sort((a, b) => a - b) };
 
         case 'minimize_high_ranking_rooms':

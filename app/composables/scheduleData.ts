@@ -102,7 +102,21 @@ export function useScheduleData(filters: {
     const rooms = computed(() => reference.value?.rooms ?? []);
     const people = computed(() => reference.value?.people ?? []);
 
-    const term = computed(() => terms.value.find((t) => t.id === filters.termId.value) ?? null);
+    /**
+     * Resolved through `resolvedTermId`, NOT `filters.termId`.
+     *
+     * `filters.termId` is seeded by the watchEffect above, which Vue never
+     * flushes during SSR — so on the server it is `''`, this computed is null,
+     * and `totalWeeks` below falls back to 1. That made the toolbar render
+     * `Week 1 / 1` with `disabled="true"` on the week buttons.
+     *
+     * The text was patched on hydration; the ATTRIBUTE was not. Vue does not
+     * rectify attribute mismatches ("this mismatch is check-only. The DOM will
+     * not be rectified"), so the buttons stayed disabled in the DOM forever and
+     * week navigation was dead on every page load — not a flash, a permanently
+     * broken control.
+     */
+    const term = computed(() => terms.value.find((t) => t.id === resolvedTermId.value) ?? null);
     const totalWeeks = computed(() => (term.value ? weeksInTerm(term.value) : 1));
 
     /**

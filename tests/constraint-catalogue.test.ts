@@ -97,7 +97,7 @@ describe('constraint → wire mapping (Stage 3d)', () => {
         // The whole point of skip-and-report: a rule the tenant never chose,
         // enforced by a solver and reported to nobody, is worse than one that
         // visibly did not run.
-        const result = toWireConstraint(row({ type: 'minimize_saturday', severity: 'SOFT', weight: 5 }), noKinds);
+        const result = toWireConstraint(row({ type: 'minimize_specifc_day', severity: 'SOFT', weight: 5 }), noKinds);
 
         expect('skip' in result).toBe(true);
         expect((result as { skip: string }).skip).toContain('days');
@@ -105,7 +105,7 @@ describe('constraint → wire mapping (Stage 3d)', () => {
 
     it('treats an EMPTY weekday list as unset, not as "avoid no days"', () => {
         const result = toWireConstraint(
-            row({ type: 'minimize_saturday', severity: 'SOFT', weight: 5, params: { days: [] } }),
+            row({ type: 'minimize_specifc_day', severity: 'SOFT', weight: 5, params: { days: [] } }),
             noKinds,
         );
 
@@ -114,7 +114,7 @@ describe('constraint → wire mapping (Stage 3d)', () => {
 
     it('sends chosen weekdays, sorted', () => {
         const result = toWireConstraint(
-            row({ type: 'minimize_saturday', severity: 'SOFT', weight: 5, params: { days: [7, 3] } }),
+            row({ type: 'minimize_specifc_day', severity: 'SOFT', weight: 5, params: { days: [7, 3] } }),
             noKinds,
         );
 
