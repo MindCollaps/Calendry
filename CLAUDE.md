@@ -1120,6 +1120,21 @@ surprises. None of these block current work.
   repointing `.claude/skills/impeccable`, or by pointing the skill's state
   elsewhere if it supports that.
 
+- **`CommonButton` renders a `<div>`, not a `<button>`.** Found while driving the
+  schedule with a real browser: `document.querySelectorAll('button')` finds none
+  of the inspector's actions, because the component emits
+  `<div class="button button--type-primary">` with a click handler. The
+  consequences are real — it is not keyboard-focusable, not reachable by Tab,
+  not announced as a button by a screen reader, and does not respond to Enter or
+  Space. Every action in the schedule inspector (Move, Swap, Lock) and the
+  solver control is affected, so the schedule is currently mouse-only.
+
+  Not fixed with the Stage-5 bug batch because it is a shared component used
+  across the app and changing its root element is a visual and behavioural change
+  everywhere at once, not a local fix. Worth doing deliberately: swap the root for
+  a real `<button type="button">`, keep the classes, and check the places that
+  pass `width="100%"` still lay out.
+
 - **`CommonButton` accepts two variants it does not style.** Callers pass
   `transparent` (`CommonChevron.vue`) and `secondary-875`
   (`ViewMenu.vue`), but SCSS exists only for `primary`, `secondary`,

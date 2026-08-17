@@ -92,9 +92,10 @@
                     :violations="data.violationsBySessionId.value"
                     :selected-id="editing.selectedId.value"
                     :placing="editing.placing.value"
+                    :swapping="editing.swapping.value"
                     :row-height="rowHeight"
                     @select="editing.select"
-                    @place="editing.move"
+                    @place="placeAt"
                 />
 
                 <ScheduleAgenda
@@ -131,10 +132,15 @@
                 :can-move="canMove"
                 :can-lock="canLock"
                 :placing="editing.placing.value"
+                :swapping="editing.swapping.value"
+                :can-swap="canSwap"
+                :rooms="data.rooms.value"
                 :busy="editing.busy.value"
                 :lookup="data.lookup"
                 @close="editing.clearSelection"
                 @toggle-place="editing.togglePlacing"
+                @toggle-swap="editing.toggleSwapping"
+                @set-rooms="editing.setRooms"
                 @toggle-lock="editing.toggleLock"
             />
         </div>
@@ -168,7 +174,19 @@ useHead({ title: 'Schedule' });
 // them reaches an endpoint that returns 403.
 // Every solver route requires this one, so it gates the whole control.
 const canTriggerSolver = useHasPermission('solver.trigger');
+/**
+ * A placement carries the week currently on screen.
+ *
+ * The grid shows one week and has no idea which, so the page — which owns
+ * `filters.week` — supplies it. That is what makes a cross-week move possible:
+ * enter placement mode, step to another week, click a slot.
+ */
+function placeAt(target: { dayOfWeek: number; blockIndex: number }) {
+    return editing.move({ ...target, termWeek: filters.week.value });
+}
+
 const canMove = useHasPermission('session.move');
+const canSwap = useHasPermission('session.swap');
 const canLock = useHasPermission('session.lock');
 
 const filters = useScheduleFilters();

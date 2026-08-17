@@ -4,7 +4,8 @@
         class="chip"
         :class="[
             `chip--${severity}`,
-            { 'chip--selected': selected, 'chip--dimmed': dimmed, 'chip--locked': session.isLocked },
+            { 'chip--selected': selected, 'chip--dimmed': dimmed,
+            'chip--targetable': targetable, 'chip--locked': session.isLocked },
         ]"
         :style="{ '--kind-color': session.kind?.color ?? $colors.primary500 }"
         :aria-pressed="selected"
@@ -55,6 +56,8 @@ const props = defineProps<{
     violations: Violation[];
     selected: boolean;
     dimmed: boolean;
+    /** In swap mode every OTHER chip is a pick target. */
+    targetable?: boolean;
 }>();
 
 defineEmits<{ select: [] }>();
@@ -190,6 +193,11 @@ const severity = computed<'none' | 'soft' | 'hard'>(() => {
         outline: 2px solid $primary400;
         outline-offset: 1px;
         background: $surface5;
+    }
+
+    &--targetable {
+        outline: 2px dashed $content5;
+        outline-offset: 1px;
     }
 
     &--dimmed {

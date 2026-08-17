@@ -44,9 +44,40 @@
                         <span class="inspector_muted">· week {{ session.termWeek }}</span>
                     </dd>
                 </div>
-                <div v-if="session.rooms.length">
+                <div v-if="canMove || session.rooms.length">
                     <dt>{{ session.rooms.length === 1 ? 'Room' : 'Rooms' }}</dt>
-                    <dd>{{ session.rooms.map(r => lookup.room(r.roomId)).join(', ') }}</dd>
+                    <!-- Read-only renders as TEXT, not a disabled control: a
+                         disabled select reads as "unavailable right now"
+                         rather than "not yours to change". -->
+                    <dd v-if="!canMove">{{ session.rooms.map(r => lookup.room(r.roomId)).join(', ') }}</dd>
+                    <dd v-else>
+                        <select
+                            class="inspector_rooms"
+                            multiple
+                            :size="Math.min(5, Math.max(3, rooms.length))"
+                            :disabled="busy"
+                            @change="onRoomsChange"
+                        >
+                            <option
+                                v-for="room in rooms"
+                                :key="room.id"
+                                :value="room.id"
+                                :selected="session.rooms.some(r => r.roomId === room.id)"
+                            >{{ room.name }}</option>
+                        </select>
+                        <!--
+                            The limit stated where the choice is made. The schema
+                            is many-to-many, but the solver wire carries ONE
+                            room_id per session, so a second room is kept here
+                            and silently narrowed on the next run. Saying so is
+                            the same discipline as reporting dropped equipment
+                            quantities instead of quietly sending less.
+                        -->
+                        <p
+                            v-if="session.rooms.length > 1"
+                            class="inspector_hint"
+                        >The solver places a session in one room — the extras are kept here but not sent to it.</p>
+                    </dd>
                 </div>
                 <div v-if="session.people.length">
                     <dt>People</dt>
@@ -99,6 +130,19 @@
                 >Unlock this session before moving it.</p>
 
                 <common-button
+                    v-if="canSwap"
+                    :type="swapping ? 'secondary-black' : 'secondary'"
+                    width="100%"
+                    :disabled="busy || session.isLocked"
+                    @click="$emit('toggle-swap')"
+                >{{ swapping ? 'Cancel swap' : 'Swap with…' }}</common-button>
+
+                <p
+                    v-if="swapping"
+                    class="inspector_hint"
+                >Now choose the session to swap places with.</p>
+
+                <common-button
                     v-if="canLock"
                     type="secondary"
                     width="100%"
@@ -125,12 +169,35 @@ const props = defineProps<{
     violations: Violation[];
     canMove: boolean;
     canLock: boolean;
+    canSwap: boolean;
     placing: boolean;
+    swapping: boolean;
     busy: boolean;
+    /** Every room the tenant has, for the picker. */
+    rooms: { id: string; name: string }[];
     lookup: { room: (id: string) => string; person: (id: string) => string; group: (id: string) => string };
 }>();
 
-defineEmits<{ close: []; 'toggle-place': []; 'toggle-lock': [] }>();
+const emit = defineEmits<{
+    close: [];
+    'toggle-place': [];
+    'toggle-swap': [];
+    'toggle-lock': [];
+    'set-rooms': [roomIds: string[]];
+}>();
+
+/**
+ * Sends the COMPLETE desired set every time.
+ *
+ * `/move` replaces `roomIds` wholesale, so emitting a single id would delete
+ * every other room the session has — which is exactly how a single-select
+ * control would have destroyed multi-room sessions without saying anything.
+ */
+function onRoomsChange(event: Event) {
+    const select = event.target as HTMLSelectElement;
+
+    emit('set-rooms', [...select.selectedOptions].map((option) => option.value));
+}
 
 /** Last block the session occupies, so the end time reflects its duration. */
 const endBlock = computed(() => (props.session

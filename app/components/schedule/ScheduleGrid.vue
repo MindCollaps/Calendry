@@ -1,7 +1,7 @@
 <template>
     <div
         class="grid"
-        :class="{ 'grid--placing': placing }"
+        :class="{ 'grid--placing': placing, 'grid--swapping': swapping }"
         :style="gridStyle"
     >
         <!--
@@ -69,6 +69,7 @@
                 :violations="violations.get(placement.session.id) ?? []"
                 :selected="placement.session.id === selectedId"
                 :dimmed="placing && placement.session.id !== selectedId"
+                :targetable="swapping && placement.session.id !== selectedId"
                 @select="$emit('select', placement.session.id)"
             />
         </div>
@@ -88,6 +89,8 @@ const props = defineProps<{
     violations: Map<string, Violation[]>;
     selectedId: string | null;
     placing: boolean;
+    /** Chips are pick targets rather than the grid's empty cells. */
+    swapping: boolean;
     rowHeight: number;
 }>();
 
