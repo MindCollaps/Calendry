@@ -129,6 +129,16 @@ model SolverRun {
   /// answerable with a query. Null once the run is terminal.
   nextPollAt DateTime? @map("next_poll_at") @db.Timestamptz(3)
 
+  /// Attempts made to re-fetch a SUCCEEDED run's missing result. Bounded at 5:
+  /// the solver's registry is in-memory, so once it restarts the result is
+  /// genuinely gone and retrying forever would be a lie told slowly.
+  resultRecoveryAttempts Int @default(0) @map("result_recovery_attempts")
+
+  /// Set when recovery gave up. The run STILL SUCCEEDED — only the capture
+  /// failed — which is why this is a separate fact rather than a status.
+  /// "Result lost" is `status = SUCCEEDED AND result_lost_at IS NOT NULL`.
+  resultLostAt DateTime? @map("result_lost_at") @db.Timestamptz(3)
+
   /// The solver's SolverOutput, captured the moment the run went terminal.
   ///
   /// Captured eagerly because the solver keeps runs in an in-memory registry

@@ -320,6 +320,17 @@ const failedSummary = computed(() => {
         return 'Run cancelled — no proposal was produced.';
     }
 
+    /**
+     * A lost result is NOT a failed run, and saying "the run failed" would be
+     * false: the solver succeeded and this app could not retrieve the answer.
+     * The distinction matters to whoever reads it — the fix is to run it again,
+     * not to look for what went wrong with the search.
+     */
+    if (run.value?.status === 'SUCCEEDED') {
+        return 'The run succeeded, but its result could not be retrieved from the solver. '
+            + 'Nothing was lost from the schedule — run it again to get a proposal.';
+    }
+
     return run.value?.errorDetail || 'The run failed.';
 });
 </script>

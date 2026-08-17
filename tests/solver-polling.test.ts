@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { classifyPollFailure, nextPollAt, pollIntervalMs } from '../server/utils/solverPolling';
+import { classifyPollFailure, nextPollAt, pollIntervalMs, RECOVERY_BACKOFF_MS } from '../server/utils/solverPolling';
+import { MAX_RECOVERY_ATTEMPTS } from '../server/utils/solverPollClaim';
 
 /**
  * Stage 4 cadence and failure classification. Pure, no server and no database.
@@ -77,5 +78,36 @@ describe('classifyPollFailure', () => {
         expect(classifyPollFailure({ cause: { code: 4 } })).toBe('unreachable');
         expect(classifyPollFailure(new Error('socket hang up'))).toBe('unreachable');
         expect(classifyPollFailure(undefined)).toBe('unreachable');
+    });
+});
+
+/**
+ * Stage 7 prep — the bounded recovery of a missing result.
+ *
+ * The claim predicate and the code that gives up must agree on the limit, or one
+ * of two silent failures follows: a row the claim still offers but the recovery
+ * refuses to finish (re-claimed forever), or a row marked lost while the claim
+ * still thinks it has attempts left.
+ */
+describe('result recovery bounds', () => {
+    it('defines a backoff for every attempt except the last', () => {
+        // Five attempts means four waits between them; the fifth gives up.
+        expect(RECOVERY_BACKOFF_MS).toHaveLength(MAX_RECOVERY_ATTEMPTS - 1);
+    });
+
+    it('backs off monotonically, starting short enough to catch a blip', () => {
+        expect(RECOVERY_BACKOFF_MS[0]).toBeLessThanOrEqual(5_000);
+
+        for (let i = 1; i < RECOVERY_BACKOFF_MS.length; i++) {
+            expect(RECOVERY_BACKOFF_MS[i]!).toBeGreaterThan(RECOVERY_BACKOFF_MS[i - 1]!);
+        }
+    });
+
+    it('gives up inside a few minutes rather than retrying indefinitely', () => {
+        // The solver's registry has no persistence: past a short window the
+        // result is gone regardless of how long we keep asking.
+        const total = RECOVERY_BACKOFF_MS.reduce((a, b) => a + b, 0);
+
+        expect(total).toBeLessThanOrEqual(10 * 60_000);
     });
 });

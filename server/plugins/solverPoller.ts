@@ -1,5 +1,5 @@
 import { claimDueRuns, inTenant, tenantsWithDueRuns } from '../utils/solverPollClaim';
-import { pollSolverRun } from '../utils/solverPolling';
+import { pollSolverRun, recoverRunResult } from '../utils/solverPolling';
 
 /**
  * Stage 4 — the background solver poller.
@@ -61,6 +61,26 @@ export default defineNitroPlugin(() => {
                  * malformed row or an unexpected error is local to itself.
                  */
                 try {
+                    /**
+                     * Two shapes are claimed, and they need opposite handling: a
+                     * live run is ADVANCED, while a finished one whose result
+                     * never arrived is RE-FETCHED. The claim already knows which
+                     * predicate matched, so it is not re-derived here.
+                     */
+                    if (run.needsResultRecovery) {
+                        const outcome = await inTenant(tenantId, (tx) => recoverRunResult(tx, run));
+
+                        if (outcome.recovered) {
+                            console.log(`[solver-poller] run ${run.id} → result recovered on attempt ${outcome.attempts}`
+                                + (outcome.generationId ? ` → generation ${outcome.generationId} (READY)` : ''));
+                        } else if (outcome.lost) {
+                            console.warn(`[solver-poller] run ${run.id} → RESULT LOST after ${outcome.attempts} `
+                                + `attempt(s): ${outcome.detail}`);
+                        }
+
+                        continue;
+                    }
+
                     // The gRPC call happens HERE, outside the claim transaction
                     // — the advisory lock was released at its commit.
                     const outcome = await inTenant(tenantId, (tx) => pollSolverRun(tx, run));

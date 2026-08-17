@@ -701,7 +701,7 @@ computed directly in SQL (18 colliding pairs / 36 sessions), the app evaluator
 pinned by `tests/violations-group-conflict.test.ts`, which fails 6 of its 8 cases
 against the old logic.
 
-### Tracked gap: a terminal run whose result was never captured is stuck forever
+### RESOLVED: a terminal run whose result was never captured
 
 Found in Stage 6b verification. One run ended like this:
 
@@ -737,12 +737,38 @@ failed" instead of hanging on a spinner or offering a Review link to nothing, an
 that case is unit-tested. But 6b does make the race *reachable from a button*,
 since a user can now press Cancel at exactly the wrong moment.
 
-**Scheduled as a small standalone fix AFTER 6c** — not folded into 6b or 6c. The
-likely shape is a recovery path for a terminal row with `result IS NULL AND
-external_run_id IS NOT NULL`, which the poller's active-only claiming does not
-currently cover. Note it must stay bounded: the solver may genuinely no longer
-have the result, so this needs an attempt limit and a terminal "result lost"
-state rather than retrying forever.
+**FIXED** by `20260817120000_solver_run_result_recovery` and `recoverRunResult()`.
+Four things are worth keeping:
+
+- **Discovery needed THREE gates widened, not one.** Besides the claim, the
+  `SECURITY DEFINER` `tenants_with_due_solver_runs()` also filtered on active
+  statuses — and the poller never visits a tenant that function does not name, so
+  widening only the claim would have looked correct while doing nothing. Proven
+  rather than assumed: with a recovery due, the widened function returns 1 tenant
+  where the old active-only predicate returns 0. (`GET /runs/:id` was left
+  short-circuiting on `isTerminal`, per Stage 4's on-demand-is-latency-only rule.)
+- **The predicate names SUCCEEDED explicitly.** "Terminal and missing a result"
+  would have chased 16 FAILED and 4 CANCELLED rows that correctly have none. Only
+  SUCCEEDED promises a result.
+- **`status` is never rewritten.** The run DID succeed and this row is the only
+  record of it; the capture failure is a separate axis, so it gets
+  `result_lost_at` and `result_recovery_attempts` rather than a new status value.
+  "Result lost" is `status = 'SUCCEEDED' AND result_lost_at IS NOT NULL`. This is
+  also what leaves the one-active-run index untouched — that index is partial on
+  PENDING/QUEUED/RUNNING, so a SUCCEEDED run already frees its term either way.
+- **NOT_FOUND short-circuits the budget.** `classifyPollFailure()` already knew
+  the difference: a solver that has forgotten the run restarted, and the result is
+  gone, so it is marked lost on attempt 1 rather than after five. Only
+  `unreachable` consumes the 5-attempt budget (5s/15s/60s/300s backoff, written on
+  the FIRST attempt — a terminal row has `next_poll_at = NULL`, which the claim
+  reads as due, so without that the stuck rows would be re-claimed every tick).
+
+Verified against a real corpus, not a fixture: the four genuinely stuck rows that
+had accumulated in the dev database were all resolved to `result_lost` at exactly
+attempt 5 with the specific message. A separately seeded run was recovered
+end-to-end — result recaptured, `termination_reason` restored, Generation created
+through the existing `createGenerationForRun()` — and a new run started normally
+on a term holding four result-lost runs.
 
 ### Stage 6c: why the review screen shows two panels and no delta
 

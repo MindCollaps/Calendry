@@ -42,13 +42,34 @@ const POLL_LOCK_NAMESPACE = 0x5031;
  */
 const CLAIM_LEASE_MS = 30_000;
 
+/**
+ * How many times a missing result is asked for again before it is declared lost.
+ *
+ * Bounded because the solver's run registry is an in-memory map with no
+ * persistence (Stage 4): once it restarts, the result is genuinely gone and no
+ * number of retries invents it. Five attempts over roughly six minutes covers a
+ * transient fetch failure without pretending a restarted solver might answer.
+ *
+ * Shared with `recoverRunResult()` so the claim's predicate and the code that
+ * gives up cannot disagree about the limit.
+ */
+export const MAX_RECOVERY_ATTEMPTS = 5;
+
 export interface ClaimedRun {
     id: string;
     tenantId: string;
-    status: 'PENDING' | 'QUEUED' | 'RUNNING';
+    status: 'PENDING' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED';
     externalRunId: string | null;
     startedAt: Date | null;
     createdAt: Date;
+    /**
+     * True when this row was claimed to RE-FETCH a missing result rather than to
+     * advance a live run. The two need different handling and the claim is the
+     * only place that knows which predicate matched, so it says so rather than
+     * leaving the poller to re-derive it.
+     */
+    needsResultRecovery: boolean;
+    resultRecoveryAttempts: number;
 }
 
 /**
@@ -97,14 +118,34 @@ export async function claimDueRuns(tenantId: string, limit = 20): Promise<Claime
          * that clause is the entire point: without SKIP LOCKED two instances
          * serialize on the same rows instead of taking disjoint work.
          */
+        /**
+         * Two shapes are claimable, and the second is deliberately narrow.
+         *
+         * A run still IN FLIGHT, as before; and a SUCCEEDED run whose result was
+         * never captured, which nothing previously ever looked at again. Only
+         * SUCCEEDED promises a result — a CANCELLED run was stopped before
+         * producing one and a FAILED run never produced one, so both correctly
+         * have `result IS NULL` and must not be chased. Writing this as "terminal
+         * and missing a result" would pull in five rows that are working exactly
+         * as designed.
+         */
         return tx.$queryRaw<ClaimedRun[]>`
             UPDATE solver_run
                SET next_poll_at = now() + (${CLAIM_LEASE_MS}::int * interval '1 millisecond')
              WHERE id IN (
                  SELECT id
                    FROM solver_run
-                  WHERE status IN ('PENDING', 'QUEUED', 'RUNNING')
-                    AND (next_poll_at IS NULL OR next_poll_at <= now())
+                  WHERE (
+                            status IN ('PENDING', 'QUEUED', 'RUNNING')
+                        AND (next_poll_at IS NULL OR next_poll_at <= now())
+                        ) OR (
+                            status = 'SUCCEEDED'
+                        AND result IS NULL
+                        AND result_lost_at IS NULL
+                        AND external_run_id IS NOT NULL
+                        AND result_recovery_attempts < ${MAX_RECOVERY_ATTEMPTS}
+                        AND (next_poll_at IS NULL OR next_poll_at <= now())
+                        )
                   ORDER BY next_poll_at NULLS FIRST
                   LIMIT ${limit}
                   FOR UPDATE SKIP LOCKED
@@ -114,7 +155,9 @@ export async function claimDueRuns(tenantId: string, limit = 20): Promise<Claime
                    status::text AS status,
                    external_run_id AS "externalRunId",
                    started_at AS "startedAt",
-                   created_at AS "createdAt"
+                   created_at AS "createdAt",
+                   (status = 'SUCCEEDED' AND result IS NULL) AS "needsResultRecovery",
+                   result_recovery_attempts AS "resultRecoveryAttempts"
         `;
     });
 }

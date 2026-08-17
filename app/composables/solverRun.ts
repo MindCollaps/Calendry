@@ -40,6 +40,8 @@ export interface SolverRunRow {
     elapsedMillis: number | null;
     terminationReason: string | null;
     errorDetail: string | null;
+    /** Set when a SUCCEEDED run's result could not be recovered. */
+    resultLostAt?: string | null;
     generationId: string | null;
     maxMoves: string | null;
     maxWallMillis: number | null;
