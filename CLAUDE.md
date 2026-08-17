@@ -718,7 +718,13 @@ REUSED rather than duplicated — one credential acting in several tenants throu
 left untouched.
 
 `verify@calendry.local` in the `test` tenant is the dedicated HTTP-verification
-account. Use it for route testing rather than a human's credential.
+account. Use it for route testing rather than a human's credential. **Its current
+password lives in the gitignored `.env` as `VERIFY_ACCOUNT_PASSWORD`** — recorded
+there rather than here because `.env` is not committed and this file is. Assume no
+fixed value: it is rotated with `bun run reset:password -- --email
+verify@calendry.local`, which prints a one-time password that must then be changed
+through `POST /api/auth/change-password`. Update `.env` when you rotate it, or the
+next session rediscovers the same dead end.
 `vic@demo.local` can now be recreated through this path whenever that tracked
 cleanup happens.
 
