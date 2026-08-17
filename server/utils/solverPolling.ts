@@ -155,12 +155,26 @@ export async function pollSolverRun(tx: Tx, run: PollableRun): Promise<PollOutco
      * message rather than whatever the gRPC object happened to look like.
      */
     let result: unknown;
+    /**
+     * Why this is captured into its own column rather than only living inside
+     * `result`: the column's whole purpose is to be QUERYABLE — "which runs are
+     * not reproducible?" is a filter, not a JSON traversal. It went unwritten
+     * until Stage 6a, so it was NULL on every row while its own schema comment
+     * told readers to consult it, and a filter on it returned nothing that read
+     * exactly like "no such runs".
+     *
+     * Rows captured before the fix stay NULL. Nothing backfills them (migrations
+     * here are schema-only), so every reader must treat NULL as UNKNOWN rather
+     * than as "reproducible".
+     */
+    let terminationReason: string | undefined;
 
     if (terminal) {
         try {
             const withResult = await getStatus(run.externalRunId, true);
 
             result = withResult.result ? SolverOutput.toJSON(withResult.result) : undefined;
+            terminationReason = withResult.result?.stats?.terminationReason || undefined;
         } catch {
             // The status transition is still worth recording even if the result
             // fetch fails; `result` staying null is visible and diagnosable,
@@ -181,7 +195,12 @@ export async function pollSolverRun(tx: Tx, run: PollableRun): Promise<PollOutco
             errorDetail: status.errorDetail || null,
             lastPolledAt: new Date(),
             ...(terminal
-                ? { finishedAt: new Date(), nextPollAt: null, ...(result ? { result: result as object } : {}) }
+                ? {
+                    finishedAt: new Date(),
+                    nextPollAt: null,
+                    ...(result ? { result: result as object } : {}),
+                    ...(terminationReason ? { terminationReason } : {}),
+                }
                 : { nextPollAt: nextPollAt(run.startedAt, run.createdAt) }),
         },
     });

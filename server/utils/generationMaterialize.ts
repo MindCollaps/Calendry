@@ -4,6 +4,7 @@ import { fromWireWeek } from './solverSessions';
 
 /**
  * Stage 5 — turning a solver result into real Session rows.
+ * Stage 6a — split into a PLAN (reads only) and an EXECUTE (writes).
  *
  * WHY THIS HAPPENS AT APPLY AND NOT AT CAPTURE
  *
@@ -16,9 +17,53 @@ import { fromWireWeek } from './solverSessions';
  * So placements stay in `solver_run.result` until someone applies the
  * Generation. Nothing is copied — the payload can be megabytes — and the
  * Generation reaches its run through `solver_run.generation_id`.
+ *
+ * WHY THE PLAN IS A SEPARATE STEP (Stage 6a)
+ *
+ * The review screen has to answer "what will applying this do?" before anything
+ * is written. Computing that answer with different code than the apply uses
+ * would let the preview and the apply disagree — the preview would eventually
+ * lie, and nothing would catch it. So `planMaterialization()` decides
+ * everything and writes nothing; `executePlan()` performs exactly what the plan
+ * says. Both callers consume the same object.
+ *
+ * Same reasoning as `pollSolverRun()` in Stage 4: one function, two callers,
+ * because two implementations of one rule is one implementation too many.
+ *
+ * The plan is a SNAPSHOT, not a promise. A manual edit between preview and
+ * apply legitimately changes the outcome; `computedAt` on the preview response
+ * is what lets a UI say so.
  */
 
-export interface MaterializeCounts {
+/** One placement the solver returned, resolved against what already exists. */
+export interface PlannedPlacement {
+    action: 'create' | 'move' | 'unchanged';
+    /** Null when the solver invented this Session — there is no row yet. */
+    sessionId: string | null;
+    offeringId: string;
+    placement: Placement;
+    /** Where it currently sits. Null for a create; the diff view needs it. */
+    previous: Placement | null;
+    roomId: string | null;
+    groupIds: string[];
+    lecturerIds: string[];
+    personIds: string[];
+}
+
+export interface Placement {
+    termWeek: number;
+    dayOfWeek: number;
+    blockIndex: number;
+    durationBlocks: number;
+}
+
+export interface PlannedDelete {
+    sessionId: string;
+    offeringId: string;
+    placement: Placement;
+}
+
+export interface PlanCounts {
     created: number;
     /** Returned with a DIFFERENT placement than it had. */
     moved: number;
@@ -32,13 +77,42 @@ export interface MaterializeCounts {
     unchanged: number;
     deleted: number;
     skippedLocked: number;
+    /**
+     * Placements that cannot be written at all — the Offering is not in this
+     * term, or the placement carries no slot.
+     *
+     * Split out from `violationsUnmapped` in Stage 6a. The two were one counter
+     * and have nothing in common: this is a PLACEMENT that cannot be stored,
+     * that is a VIOLATION that cannot be attached to a row. Different causes,
+     * different fixes, and merging them made both unreadable.
+     */
+    placementsUnmapped: number;
+}
+
+export interface MaterializationPlan {
+    placements: PlannedPlacement[];
+    deletes: PlannedDelete[];
+    /** Ids of locked Sessions, which are never touched. */
+    skippedLocked: string[];
+    counts: PlanCounts;
+}
+
+export interface MaterializeCounts extends PlanCounts {
     violationsSession: number;
     violationsOffering: number;
+    /** Violations naming a Session or Offering that could not be resolved. */
     violationsUnmapped: number;
 }
 
+function samePlacement(a: Placement, b: Placement): boolean {
+    return a.termWeek === b.termWeek
+        && a.dayOfWeek === b.dayOfWeek
+        && a.blockIndex === b.blockIndex
+        && a.durationBlocks === b.durationBlocks;
+}
+
 /**
- * Replaces the in-scope Sessions of a term with the solver's placement.
+ * Decides what applying this output would do. Reads the database; writes nothing.
  *
  * THE THREE-WAY PARTITION, and the one that is destructive:
  *
@@ -57,15 +131,14 @@ export interface MaterializeCounts {
  * fixtures (TAXONOMY.md §3), so honouring that here is not a policy choice —
  * the answer was computed on the assumption they would not move.
  */
-export async function materializeGeneration(tx: Tx, options: {
+export async function planMaterialization(tx: Tx, options: {
     tenantId: string;
     termId: string;
-    generationId: string;
     output: SolverOutput;
     /** Offerings the run was allowed to place. Anything else is out of scope. */
     scopeOfferingIds: string[];
-}): Promise<MaterializeCounts> {
-    const { tenantId, termId, generationId, output, scopeOfferingIds } = options;
+}): Promise<MaterializationPlan> {
+    const { tenantId, termId, output, scopeOfferingIds } = options;
 
     const inScope = new Set(scopeOfferingIds);
 
@@ -79,8 +152,6 @@ export async function materializeGeneration(tx: Tx, options: {
 
     const existingById = new Map(existing.map((s) => [s.id, s]));
 
-    const skippedLocked = existing.filter((s) => s.isLocked).length;
-
     // Kind is per-Offering; the wire carries the kind KEY on each placement but
     // the Session column is a foreign key, so it is resolved from the Offering
     // rather than looked up by string.
@@ -90,27 +161,20 @@ export async function materializeGeneration(tx: Tx, options: {
     });
     const offeringById = new Map(offerings.map((o) => [o.id, o]));
 
-    const counts: MaterializeCounts = {
-        created: 0,
-        moved: 0,
-        unchanged: 0,
-        deleted: 0,
-        skippedLocked,
-        violationsSession: 0,
-        violationsOffering: 0,
-        violationsUnmapped: 0,
-    };
+    const placements: PlannedPlacement[] = [];
+    const skippedLocked = existing.filter((s) => s.isLocked).map((s) => s.id);
+    const keptIds = new Set<string>(skippedLocked);
 
-    const keptIds = new Set<string>();
+    let placementsUnmapped = 0;
 
     for (const placed of output.sessions) {
         const offering = offeringById.get(placed.offeringId);
 
         // A placement for an Offering this term does not have cannot be written
-        // — the FK would reject it. Counted as unmapped rather than throwing:
-        // one bad placement should not abandon an otherwise good apply.
+        // — the FK would reject it. Counted rather than thrown: one bad
+        // placement should not abandon an otherwise good apply.
         if (!offering || !placed.startSlot) {
-            counts.violationsUnmapped++;
+            placementsUnmapped++;
 
             continue;
         }
@@ -120,45 +184,117 @@ export async function materializeGeneration(tx: Tx, options: {
         // The solver was told this one could not move; its own output should
         // agree, but the app does not rely on that.
         if (current?.isLocked) {
-            keptIds.add(current.id);
-
             continue;
         }
 
-        const placement = {
+        const placement: Placement = {
             termWeek: fromWireWeek(placed.startSlot.week),
             dayOfWeek: placed.startSlot.day,
             blockIndex: placed.startSlot.block,
             durationBlocks: placed.durationBlocks || offering.durationBlocks,
-            generationId,
         };
 
-        const sessionId = current
-            ? (await tx.session.update({ where: { id: current.id }, data: placement })).id
+        const previous: Placement | null = current
+            ? {
+                termWeek: current.termWeek,
+                dayOfWeek: current.dayOfWeek,
+                blockIndex: current.blockIndex,
+                durationBlocks: current.durationBlocks,
+            }
+            : null;
+
+        placements.push({
+            action: !current
+                ? 'create'
+                : samePlacement(placement, previous!) ? 'unchanged' : 'move',
+            sessionId: current?.id ?? null,
+            offeringId: placed.offeringId,
+            placement,
+            previous,
+            roomId: placed.roomId || null,
+            groupIds: placed.groupIds,
+            lecturerIds: placed.lecturerIds,
+            personIds: placed.personIds,
+        });
+
+        if (current) {
+            keptIds.add(current.id);
+        }
+    }
+
+    /**
+     * Everything in scope that the solver did not return. Locked Sessions and
+     * Sessions of out-of-scope Offerings are excluded — the solver was never
+     * asked about those and its silence says nothing.
+     */
+    const deletes: PlannedDelete[] = existing
+        .filter((s) => !keptIds.has(s.id) && !s.isLocked && inScope.has(s.offeringId))
+        .map((s) => ({
+            sessionId: s.id,
+            offeringId: s.offeringId,
+            placement: {
+                termWeek: s.termWeek,
+                dayOfWeek: s.dayOfWeek,
+                blockIndex: s.blockIndex,
+                durationBlocks: s.durationBlocks,
+            },
+        }));
+
+    return {
+        placements,
+        deletes,
+        skippedLocked,
+        counts: {
+            created: placements.filter((p) => p.action === 'create').length,
+            moved: placements.filter((p) => p.action === 'move').length,
+            unchanged: placements.filter((p) => p.action === 'unchanged').length,
+            deleted: deletes.length,
+            skippedLocked: skippedLocked.length,
+            placementsUnmapped,
+        },
+    };
+}
+
+/**
+ * Performs exactly what the plan says, then records the run's residual
+ * violations.
+ *
+ * Takes the plan rather than recomputing it, so that what a preview showed and
+ * what an apply did are the same decision rather than two that happen to agree.
+ */
+export async function executePlan(tx: Tx, plan: MaterializationPlan, options: {
+    tenantId: string;
+    termId: string;
+    generationId: string;
+    violations: ConstraintViolation[];
+}): Promise<MaterializeCounts> {
+    const { tenantId, termId, generationId, violations } = options;
+
+    const offerings = await tx.offering.findMany({
+        where: { tenantId, termId },
+        select: { id: true, kindId: true },
+    });
+    const kindByOffering = new Map(offerings.map((o) => [o.id, o.kindId]));
+
+    const lecturerRole = await tx.role.findFirst({
+        where: { tenantId, key: 'lecturer' },
+        select: { id: true },
+    });
+
+    for (const planned of plan.placements) {
+        const placement = { ...planned.placement, generationId };
+
+        const sessionId = planned.sessionId
+            ? (await tx.session.update({ where: { id: planned.sessionId }, data: placement })).id
             : (await tx.session.create({
                 data: {
                     tenantId,
                     termId,
-                    offeringId: placed.offeringId,
-                    kindId: offering.kindId,
+                    offeringId: planned.offeringId,
+                    kindId: kindByOffering.get(planned.offeringId)!,
                     ...placement,
                 },
             })).id;
-
-        if (!current) {
-            counts.created++;
-        } else if (
-            current.termWeek === placement.termWeek
-            && current.dayOfWeek === placement.dayOfWeek
-            && current.blockIndex === placement.blockIndex
-            && current.durationBlocks === placement.durationBlocks
-        ) {
-            counts.unchanged++;
-        } else {
-            counts.moved++;
-        }
-
-        keptIds.add(sessionId);
 
         // Join rows are replaced wholesale rather than diffed: the placement is
         // the authority on who and what is involved, and a diff would be three
@@ -169,54 +305,55 @@ export async function materializeGeneration(tx: Tx, options: {
             tx.sessionGroup.deleteMany({ where: { sessionId } }),
         ]);
 
-        if (placed.roomId) {
-            await tx.sessionRoom.create({ data: { sessionId, roomId: placed.roomId, tenantId } });
+        if (planned.roomId) {
+            await tx.sessionRoom.create({ data: { sessionId, roomId: planned.roomId, tenantId } });
         }
 
-        const lecturerRole = await tx.role.findFirst({
-            where: { tenantId, key: 'lecturer' },
-            select: { id: true },
-        });
-
-        for (const personId of placed.lecturerIds) {
+        for (const personId of planned.lecturerIds) {
             await tx.sessionPerson.create({
                 data: { sessionId, personId, roleId: lecturerRole?.id ?? null, tenantId },
             });
         }
 
-        for (const personId of placed.personIds) {
+        for (const personId of planned.personIds) {
             await tx.sessionPerson.create({ data: { sessionId, personId, roleId: null, tenantId } });
         }
 
-        for (const groupId of placed.groupIds) {
+        for (const groupId of planned.groupIds) {
             await tx.sessionGroup.create({ data: { sessionId, groupId, tenantId } });
         }
     }
 
-    /**
-     * Everything in scope that the solver did not return. Locked Sessions and
-     * Sessions of out-of-scope Offerings are excluded — the solver was never
-     * asked about those and its silence says nothing.
-     */
-    const orphans = existing.filter((session) => (
-        !keptIds.has(session.id)
-        && !session.isLocked
-        && inScope.has(session.offeringId)
-    ));
-
-    if (orphans.length) {
-        const removed = await tx.session.deleteMany({ where: { id: { in: orphans.map((s) => s.id) } } });
-
-        counts.deleted = removed.count;
+    if (plan.deletes.length) {
+        await tx.session.deleteMany({
+            where: { id: { in: plan.deletes.map((d) => d.sessionId) } },
+        });
     }
 
-    Object.assign(counts, await materializeViolations(tx, {
+    return {
+        ...plan.counts,
+        ...await materializeViolations(tx, { tenantId, generationId, violations }),
+    };
+}
+
+/** Plan and execute in one step — the apply route's entry point. */
+export async function materializeGeneration(tx: Tx, options: {
+    tenantId: string;
+    termId: string;
+    generationId: string;
+    output: SolverOutput;
+    scopeOfferingIds: string[];
+}): Promise<MaterializeCounts> {
+    const { tenantId, termId, generationId, output, scopeOfferingIds } = options;
+
+    const plan = await planMaterialization(tx, { tenantId, termId, output, scopeOfferingIds });
+
+    return executePlan(tx, plan, {
         tenantId,
+        termId,
         generationId,
         violations: output.hardViolations,
-    }));
-
-    return counts;
+    });
 }
 
 /**
@@ -311,6 +448,45 @@ async function materializeViolations(tx: Tx, options: {
     }
 
     return counts;
+}
+
+/**
+ * Counts how the run's violations WOULD map, without writing anything.
+ *
+ * Deliberately mirrors `materializeViolations()` rather than sharing its loop:
+ * that one resolves against Sessions as they exist AFTER the plan is applied,
+ * this one has to answer before any of it exists. What it can say honestly is
+ * how many name a Session the solver invented and therefore cannot be attached
+ * to any row — the tracked cross-repo gap. Reporting that number is the point;
+ * netting it out would make an unsatisfiable timetable look cleaner than it is.
+ */
+export function summarizeProposedViolations(violations: ConstraintViolation[]): {
+    hard: number;
+    byType: Record<string, number>;
+    /** References naming a Session that exists nowhere in the placements. */
+    unmappable: number;
+    sessionReferences: number;
+} {
+    const byType: Record<string, number> = {};
+    let unmappable = 0;
+    let sessionReferences = 0;
+
+    for (const violation of violations) {
+        byType[violation.constraintType] = (byType[violation.constraintType] ?? 0) + 1;
+
+        for (const sessionId of violation.sessionIds) {
+            sessionReferences++;
+
+            // The solver names Sessions it invented with a synthetic
+            // "<offeringId>#<index>" key that appears nowhere in the placements,
+            // so there is no join key back to the row the apply will create.
+            if (sessionId.includes('#')) {
+                unmappable++;
+            }
+        }
+    }
+
+    return { hard: violations.length, byType, unmappable, sessionReferences };
 }
 
 /**
