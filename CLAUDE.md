@@ -690,10 +690,11 @@ Sessions.
 
 `materializeGeneration()` counts these in `violationsUnmapped` rather than
 dropping them silently, which is the right behaviour but not a fix. Closing it is
-a cross-repo change and belongs with the solver: either populate
-`PlacedSession.session_id` with the same synthetic key used in violations, or
-have violations reference placements by index into `sessions`. **Do not "fix" it
-by guessing a mapping from offering + slot.**
+a cross-repo change and belongs with the solver, which needs to give a
+newly-created `PlacedSession` a **stable, joinable reference** in violation
+reports — most likely its INDEX in the output `sessions` list, rather than an
+empty `session_id` paired with a synthetic key that appears nowhere else.
+**Do not "fix" it here by guessing a mapping from offering + slot.**
 
 In practice the loss is currently masked — `refreshViolations()` runs after
 materialize and re-derives the structural violations from the applied rows, so
