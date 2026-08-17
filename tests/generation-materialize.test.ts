@@ -3,7 +3,8 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { SolverOutput } from '@mindcollaps/calendry-proto';
 import {
-    executePlan, materializeGeneration, planMaterialization, summarizeProposedViolations,
+    executePlan, materializeGeneration, planMaterialization,
+    summarizePlanByWeek, summarizeProposedViolations,
 } from '../server/utils/generationMaterialize';
 
 /**
@@ -441,6 +442,60 @@ describe('planMaterialization', () => {
         }));
 
         expect(counts).toMatchObject(plan.counts);
+    });
+});
+
+describe('summarizePlanByWeek', () => {
+    it('buckets each action into the week it lands in', async () => {
+        await seed();
+
+        const plan = await db.$transaction((tx) => planMaterialization(tx as never, {
+            tenantId: ids.tenant, termId: ids.term, output: output(),
+            scopeOfferingIds: [ids.offeringA, ids.offeringB],
+        }));
+
+        const weeks = summarizePlanByWeek(plan);
+        const total = weeks.reduce((sum, w) => ({
+            created: sum.created + w.created,
+            moved: sum.moved + w.moved,
+            unchanged: sum.unchanged + w.unchanged,
+            deleted: sum.deleted + w.deleted,
+        }), { created: 0, moved: 0, unchanged: 0, deleted: 0 });
+
+        // The index must agree with the headline counts beside it, or the week
+        // picker sends someone to a week where nothing happened.
+        expect(total).toEqual({
+            created: plan.counts.created,
+            moved: plan.counts.moved,
+            unchanged: plan.counts.unchanged,
+            deleted: plan.counts.deleted,
+        });
+    });
+
+    it('is sorted by week and counts a deletion in the week it currently occupies', async () => {
+        await seed();
+
+        const plan = await db.$transaction((tx) => planMaterialization(tx as never, {
+            tenantId: ids.tenant, termId: ids.term, output: output(),
+            scopeOfferingIds: [ids.offeringA, ids.offeringB],
+        }));
+
+        const weeks = summarizePlanByWeek(plan);
+
+        expect(weeks.map((w) => w.termWeek)).toEqual([...weeks.map((w) => w.termWeek)].sort((a, b) => a - b));
+
+        // The dropped session sits in week 1, so that is where a reviewer looks
+        // for it — not in whatever week the solver's output happened to mention.
+        const deleted = weeks.find((w) => w.deleted > 0);
+
+        expect(deleted?.termWeek).toBe(1);
+    });
+
+    it('returns nothing for a plan with no placements at all', () => {
+        expect(summarizePlanByWeek({
+            placements: [], deletes: [], skippedLocked: [],
+            counts: { created: 0, moved: 0, unchanged: 0, deleted: 0, skippedLocked: 0, placementsUnmapped: 0 },
+        })).toEqual([]);
     });
 });
 

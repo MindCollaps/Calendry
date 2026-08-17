@@ -255,6 +255,55 @@ export async function planMaterialization(tx: Tx, options: {
     };
 }
 
+export interface WeekSummaryRow {
+    termWeek: number;
+    created: number;
+    moved: number;
+    unchanged: number;
+    deleted: number;
+}
+
+/**
+ * The plan's changes bucketed by term week.
+ *
+ * A review screen renders one week at a time — the payload for a whole term can
+ * be a thousand placements — which leaves a reviewer clicking through nineteen
+ * weeks to find the three that changed. This is the index that makes the week
+ * picker able to say where the changes are.
+ *
+ * Derived from the plan rather than queried: it is the same decision, counted a
+ * second way, so it cannot disagree with the numbers beside it.
+ */
+export function summarizePlanByWeek(plan: MaterializationPlan): WeekSummaryRow[] {
+    const byWeek = new Map<number, WeekSummaryRow>();
+
+    const row = (termWeek: number) => {
+        const existing = byWeek.get(termWeek)
+            ?? { termWeek, created: 0, moved: 0, unchanged: 0, deleted: 0 };
+
+        byWeek.set(termWeek, existing);
+
+        return existing;
+    };
+
+    // The action names and the count names differ by design — `create` is what
+    // happens, `created` is how many — so the mapping is explicit rather than
+    // an index that happens to line up.
+    const KEY = { create: 'created', move: 'moved', unchanged: 'unchanged' } as const;
+
+    for (const placement of plan.placements) {
+        row(placement.placement.termWeek)[KEY[placement.action]]++;
+    }
+
+    // A deletion belongs to the week it currently occupies — that is where a
+    // reviewer will look for the session that is about to vanish.
+    for (const del of plan.deletes) {
+        row(del.placement.termWeek).deleted++;
+    }
+
+    return [...byWeek.values()].sort((a, b) => a.termWeek - b.termWeek);
+}
+
 /**
  * Performs exactly what the plan says, then records the run's residual
  * violations.

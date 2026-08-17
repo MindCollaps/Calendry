@@ -312,7 +312,10 @@ otherwise" is not one.
 - [x] Schedule view + editor UI
 - [x] Management UI for the core entities + Ctrl+K command palette
 - [ ] AccessRole / permission management UI (Step 14)
-- [ ] **Solver integration — IN PROGRESS, see the section below (Stage 1)**
+- [x] **Solver integration Stages 1–6 — COMPLETE.** Start a solve, never lose
+      the result, review it, apply or discard it. Stage 7 (Federation +
+      PersonDoubleBooking) remains, and one standalone fix is outstanding
+      first — see "a terminal run whose result was never captured" below.
 - [ ] Import (CSV/Excel)
 - [ ] Export (iCal/Google/Outlook)
 - [ ] Notifications (delivery; audience resolution already exists)
@@ -478,7 +481,7 @@ proto:
 | **3** | Real `SolverInput` assembly from Prisma. **3a/3c and 3b/3e DONE** — calendar, slot arithmetic, entities, wire-up, placeholder deleted, `RUNNING → CANCELLED` verified. **3d remains**: constraint mapping, the three missing parameter sets, and the `ManageWeekdayPicker` extraction. |
 | ~~4~~ | **DONE.** Background poller (`server/plugins/solverPoller.ts`) owns advancing runs and capturing results; on-demand `GET /runs/:id` is latency only. Adaptive cadence, `FOR UPDATE SKIP LOCKED` claim, NOT_FOUND→FAILED. |
 | ~~5~~ | **DONE.** `generationFromRun.ts` (poller creates a READY Generation on SUCCEEDED) + `generationMaterialize.ts` (create/move/unchanged/delete partition, violations onto `constraint_violation`). Verified both ways: a clean run applied end to end, and an over-constrained SUCCEEDED-with-23-violations run applied successfully. Fixed two pre-existing bugs it uncovered — see below. |
-| 6 | UI: trigger, status/progress, review-before-apply. |
+| ~~6~~ | **DONE.** 6a: plan/execute split + `GET /api/generations`, `/:id`, `/:id/preview`, `POST /:id/discard`, `termination_reason` capture. 6b: six-state solver control in the schedule toolbar, honest progress, cancel, run adoption. 6c: `/schedule/review/[id]` — two non-commensurable violation panels, change partition, diff grid, apply/discard. |
 | 7 | Federation support (deferred from 1–6), **and** closing a cross-repo gap found during solver work: this app's own manual-edit evaluator is **missing a PersonDoubleBooking check** — see below. |
 
 ### What Stage 2 established, and the one path it could not test
@@ -740,6 +743,49 @@ external_run_id IS NOT NULL`, which the poller's active-only claiming does not
 currently cover. Note it must stay bounded: the solver may genuinely no longer
 have the result, so this needs an attempt limit and a terminal "result lost"
 state rather than retrying forever.
+
+### Stage 6c: why the review screen shows two panels and no delta
+
+The obvious design — "0 issues → 23 issues" — is wrong, and the screen
+deliberately refuses to draw it.
+
+`violations.current` comes from `constraint_violation`, which this app's
+evaluator fills using **only the three structural double-booking rules**
+(`violations.ts` says so). `violations.proposed` is the solver reporting on **all
+14 constraint types**. They are different measurements of different things.
+
+Measured, not assumed: on the same over-constrained timetable the solver reported
+**23** hard violations, and after applying, `refreshViolations()` recorded **36
+session-scoped rows plus 5 offering-scoped** — because the two evaluate different
+rule sets. An arrow between those numbers would invent a comparison that does not
+exist.
+
+So the screen renders two labelled panels, each naming its own source ("checked
+by Calendry — 3 structural rules" / "reported by the solver — 14 constraint
+types") and an explicit line saying they are not a like-for-like difference.
+
+**A true delta needs a dry-run evaluator** — running the app's own evaluator over
+the proposed placements without writing them, so both sides are measured the same
+way. That is real future scope, deliberately not built: it is a genuine feature,
+not a tweak, and faking it with the numbers available would be worse than saying
+so.
+
+### Tracked gap: a page must not depend on permissions its own gate does not imply
+
+Found in 6c verification. `/schedule/review/[id]` is gated on `session.read` (the
+preview endpoint's permission), but its reference fetch called `/api/offerings`,
+which requires `offering.read`. The `viewer` role has the former and not the
+latter, so one 403 inside a `Promise.all` rejected the whole handler and rendered
+a **completely blank page** — not an error, not a partial view, nothing.
+
+Fixed twice over: offering names now travel with the preview response, under that
+route's own gate; and the remaining reference fetches are individually tolerant,
+degrading to showing ids rather than blanking the page.
+
+The general rule, worth applying to any new page: **enumerate every endpoint a
+page calls and confirm each is covered by the permission the page is gated on.**
+A `Promise.all` of reference fetches turns one missing permission into a blank
+screen, which is the least diagnosable failure a UI has.
 
 ### Tracked gap: solver violations naming Sessions the solver invented
 

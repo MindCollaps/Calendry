@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { SolverOutput } from '@mindcollaps/calendry-proto';
-import { planMaterialization, summarizeProposedViolations } from '../../../utils/generationMaterialize';
+import {
+    planMaterialization, summarizePlanByWeek, summarizeProposedViolations,
+} from '../../../utils/generationMaterialize';
 import type { MaterializationPlan } from '../../../utils/generationMaterialize';
 import { GENERATION_SELECT, runSummaryFor } from '../../../utils/generationRead';
 import { requirePermission } from '../../../utils/requirePermission';
@@ -72,6 +74,8 @@ export default defineEventHandler(async (event) => {
                         current: await summarizeCurrentViolations(tx, identity.tenantId, stored?.termId),
                         proposed: { hard: 0, byType: {}, unmappable: 0, sessionReferences: 0 },
                     },
+                    weekSummary: [],
+                    offerings: [],
                     placements: query.include === 'placements' ? [] : undefined,
                     computedAt: new Date().toISOString(),
                 };
@@ -99,6 +103,23 @@ export default defineEventHandler(async (event) => {
                     current: await summarizeCurrentViolations(tx, identity.tenantId, stored.termId),
                     proposed: summarizeProposedViolations(output.hardViolations),
                 },
+                // Where the changes are, so a nineteen-week term does not have
+                // to be clicked through week by week to find the three that moved.
+                weekSummary: summarizePlanByWeek(plan),
+                /**
+                 * Offering names travel WITH the preview rather than being
+                 * fetched separately from /api/offerings.
+                 *
+                 * That endpoint requires `offering.read`, which this route's
+                 * own gate (`session.read`) does not imply — a viewer with
+                 * session.read got a 403 that rejected the page's whole
+                 * reference fetch and rendered a blank screen. A page must
+                 * only depend on what its own permission gate guarantees.
+                 */
+                offerings: await tx.offering.findMany({
+                    where: { tenantId: identity.tenantId, termId: stored.termId },
+                    select: { id: true, title: true, code: true },
+                }),
                 placements: query.include === 'placements'
                     ? filterPlacements(plan, query)
                     : undefined,
