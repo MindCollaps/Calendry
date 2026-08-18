@@ -2,7 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { STRUCTURAL_CONSTRAINT_TYPES } from '../../shared/constraintTypes';
 import type { StructuralConstraintType } from '../../shared/constraintTypes';
 import type { Tx } from './tenantDb';
-import { conflictGroupIds } from './groupClosure';
+import { conflictGroupIds, descendantGroupIds } from './groupClosure';
 
 /**
  * Constraint evaluation for manual edits — the warn-and-allow half of
@@ -166,6 +166,53 @@ export async function refreshViolations(tx: Tx, options: RefreshOptions): Promis
     const byPerson = groupBy(people, 'sessionId', 'personId');
     const byGroup = groupBy(groups, 'sessionId', 'groupId');
 
+    /**
+     * Who actually ATTENDS each Session — direct participants plus the members
+     * of every group beneath the ones assigned to it.
+     *
+     * DESCENDANTS ONLY, not the conflict closure. Membership flows downward:
+     * being in Seminar A1 makes you part of Class A's cohort, but being in
+     * Class A does not put you in Seminar A1. This is the same direction
+     * `descendantGroupIds` already serves for notification fan-out, and the same
+     * one the solver uses (`expand_subtree`) to build its attendee sets.
+     *
+     * Resolved ONCE for all involved sessions, and the membership rows fetched
+     * in a single query — doing either inside the pair loop would be O(n²)
+     * round trips.
+     */
+    const attendeeSets = new Map<string, Set<string>>();
+
+    {
+        const groupsPerSession = new Map<string, string[]>();
+
+        for (const sessionId of involvedIds) {
+            groupsPerSession.set(sessionId, await descendantGroupIds(tx, byGroup.get(sessionId) ?? []));
+        }
+
+        const allGroupIds = [...new Set([...groupsPerSession.values()].flat())];
+
+        const memberships = allGroupIds.length
+            ? await tx.membership.findMany({
+                where: { groupId: { in: allGroupIds } },
+                select: { groupId: true, personId: true },
+            })
+            : [];
+
+        const membersByGroup = groupBy(memberships, 'groupId', 'personId');
+
+        for (const sessionId of involvedIds) {
+            const people = new Set(byPerson.get(sessionId) ?? []);
+
+            for (const groupId of groupsPerSession.get(sessionId) ?? []) {
+                for (const personId of membersByGroup.get(groupId) ?? []) {
+                    people.add(personId);
+                }
+            }
+
+            attendeeSets.set(sessionId, people);
+        }
+    }
+
     // Expand each Session's groups to its full conflict set once, up front.
     // Doing this inside the pair loop would re-query the closure O(n²) times.
     const conflictSets = new Map<string, Set<string>>();
@@ -196,7 +243,7 @@ export async function refreshViolations(tx: Tx, options: RefreshOptions): Promis
                     constraint.type as StructuralConstraintType,
                     seed,
                     other,
-                    { byRoom, byPerson, byGroup, conflictSets },
+                    { byRoom, byPerson, byGroup, conflictSets, attendeeSets },
                 );
 
                 if (!collision) {
@@ -271,6 +318,8 @@ export function describeCollision(
         /** Each Session's DIRECTLY assigned Groups — never the closure. */
         byGroup: Map<string, string[]>;
         conflictSets: Map<string, Set<string>>;
+        /** Everyone attending each Session: direct participants + group members. */
+        attendeeSets: Map<string, Set<string>>;
     },
 ): Prisma.InputJsonObject | null {
     switch (type) {
@@ -319,6 +368,29 @@ export function describeCollision(
             const shared = [...new Set(directB)].filter((g) => closureA.has(g));
 
             return shared.length ? { reason: 'group_double_booked', groupIds: shared } : null;
+        }
+
+        case 'no_double_booking_person': {
+            /**
+             * Catches what the group rule structurally CANNOT: a person in two
+             * groups unrelated in the nesting tree, both scheduled at once.
+             * `conflictGroupIds` never connects those groups, so no amount of
+             * group checking will ever see it.
+             *
+             * Both sides are expanded all the way down to PEOPLE and then
+             * intersected by identity. Symmetric expansion is safe here — and
+             * would not be for groups — because people are leaves: two people
+             * are the same person or they are not, so the "shares an ancestor"
+             * false positive that broke the group check cannot arise.
+             *
+             * Mirrors the solver's own implementation, which resolves each
+             * session to an attendee set the same way.
+             */
+            const setA = ctx.attendeeSets.get(a.id) ?? new Set<string>();
+            const setB = ctx.attendeeSets.get(b.id) ?? new Set<string>();
+            const shared = [...setA].filter((personId) => setB.has(personId));
+
+            return shared.length ? { reason: 'person_double_booked', personIds: shared } : null;
         }
 
         default:

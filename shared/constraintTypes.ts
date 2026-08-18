@@ -28,6 +28,7 @@ export const STRUCTURAL_CONSTRAINT_TYPES = [
     'no_double_booking_room',
     'no_double_booking_lecturer',
     'no_double_booking_group',
+    'no_double_booking_person',
 ] as const;
 
 export type StructuralConstraintType = (typeof STRUCTURAL_CONSTRAINT_TYPES)[number];
@@ -158,6 +159,19 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
         description:
             'A group cannot have two overlapping sessions. Propagates through nesting: '
             + 'a cohort lecture blocks its seminars, and a seminar blocks its cohort.',
+        evaluator: 'app',
+        severity: 'HARD',
+        params: [],
+    },
+
+    {
+        key: 'no_double_booking_person',
+        wireField: 'personDoubleBooking',
+        label: 'No double-booked attendees',
+        description:
+            'Nobody attends two overlapping sessions. Catches what the group rule '
+            + 'structurally cannot: a person in two groups unrelated in the nesting '
+            + 'tree, both scheduled at once.',
         evaluator: 'app',
         severity: 'HARD',
         params: [],
