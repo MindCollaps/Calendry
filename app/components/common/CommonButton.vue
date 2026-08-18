@@ -60,6 +60,16 @@ const props = defineProps({
     tag: {
         type: String,
     },
+    /**
+     * The NATIVE button type — distinct from `type`, which is this component's
+     * visual variant and was already taken. Defaults to 'button' so a button
+     * inside a form does not submit it by accident; the auth forms pass
+     * 'submit' deliberately.
+     */
+    nativeType: {
+        type: String as PropType<'button' | 'submit' | 'reset'>,
+        default: 'button',
+    },
     width: {
         type: String,
     },
@@ -133,12 +143,26 @@ defineSlots<{
     append?(): any;
 }>();
 
+/**
+ * A real <button> by default, not a <div>.
+ *
+ * It rendered a div until now, which meant every action built on this component
+ * — the whole schedule inspector, the solver control, the command palette — was
+ * mouse-only: not reachable by Tab, not activated by Enter or Space, and not
+ * announced as a button by a screen reader.
+ *
+ * `disabled` also gets a real button rather than a div, so assistive tech hears
+ * "unavailable" instead of nothing.
+ */
 const getTag = computed(() => {
-    if (props.disabled) return props.tag ?? 'div';
+    if (props.disabled) return props.tag ?? 'button';
     if (props.href) return 'a';
     if (props.to) return NuxtLink;
-    return props.tag ?? 'div';
+    return props.tag ?? 'button';
 });
+
+/** True only when we actually render a native <button> element. */
+const isNativeButton = computed(() => getTag.value === 'button');
 
 const getAttrs = computed(() => {
     const attrs: Record<string, any> = {};
@@ -147,6 +171,21 @@ const getAttrs = computed(() => {
         attrs.noPrefetch = true;
     }
     else if (props.href) attrs.href = props.href;
+
+    if (isNativeButton.value) {
+        /**
+         * `type` is already this component's VISUAL variant, so the native one
+         * needs its own prop. It defaults to "button" because a <button> inside
+         * a <form> is a SUBMIT button unless told otherwise — switching the
+         * default tag without this would have turned every button in every form
+         * into an accidental submit.
+         *
+         * The two auth forms opt in with `native-type="submit"`, which is what
+         * makes Enter-to-submit work there.
+         */
+        attrs.type = props.nativeType ?? 'button';
+        attrs.disabled = props.disabled || undefined;
+    }
 
     return attrs;
 });
@@ -169,6 +208,11 @@ const getAttrs = computed(() => {
     border: none;
     border-radius: 4px;
 
+    /* A native <button> inherits the UA's font, not the page's — so switching
+       the root element from <div> would silently restyle every button. The
+       styling is otherwise keyed on classes, which is what makes the tag change
+       a drop-in. */
+    font: inherit;
     color: $typographyPrimary;
     text-align: v-bind(textAlign);
     text-decoration: none;

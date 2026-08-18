@@ -614,6 +614,37 @@ results eagerly (above) and treats NOT_FOUND as terminal.
 repo is next touched; recording it only here means the repo that can fix it is
 the one repo that does not know.
 
+### Tracked gap (cross-repo): the solver treats a VIRTUAL room as capacity-1
+
+Confirmed by reading `calendry-solver`'s source, not inferred. This app now
+exempts virtual rooms from `no_double_booking_room`; the solver does not, and its
+half is the damaging one because it constrains the SEARCH, not just the report.
+
+Two places need the same exemption, and they must move together or the solver
+will refuse placements it then declines to report:
+
+- **`crates/core/src/solution.rs` — `Occupancy`.** `room` is a `BitMatrix` over
+  (rooms × slots): binary, with no capacity dimension. `is_free()` returns false
+  the moment the room bit is set, with no `is_virtual` check. So during the
+  constructive phase AND local search, **one session per slot per virtual room,
+  tenant-wide** — an artificial cap on all online delivery.
+- **`crates/core/src/constraints.rs` — the `RoomDoubleBooking` branch.** Reports
+  whenever `rx == ry`, again with no `is_virtual` check.
+
+That this is a bug rather than a stance: the solver already knows the flag and
+uses it elsewhere — `soft.rs` (`MinimizeOnline`), `convert.rs`
+(`if r.is_virtual && !o.allow_online`), `solution.rs`. And the proto says the
+intent outright: *"Online delivery is modeled as a virtual Room rather than a
+boolean flag on the Session, so room-assignment logic stays uniform."* Uniform
+room handling is the design; the occupancy exemption was simply never added.
+
+**Not fixed from this repo** — same treatment as the PersonDoubleBooking gap
+below. Note when it is fixed: key on the `is_virtual` FLAG, never on a
+well-known "online" room, because nothing restricts a tenant to one virtual room.
+A virtual room with a genuine concurrency limit (a single meeting licence) cannot
+be expressed today at all — `capacity` means seats — and would need an explicit
+`concurrentCapacity`, not an overload of `capacity`.
+
 ### Tracked gap: the manual-edit evaluator misses person clashes across groups
 
 Found while building the solver. `server/utils/violations.ts` evaluates
@@ -1120,20 +1151,28 @@ surprises. None of these block current work.
   repointing `.claude/skills/impeccable`, or by pointing the skill's state
   elsewhere if it supports that.
 
-- **`CommonButton` renders a `<div>`, not a `<button>`.** Found while driving the
-  schedule with a real browser: `document.querySelectorAll('button')` finds none
-  of the inspector's actions, because the component emits
-  `<div class="button button--type-primary">` with a click handler. The
-  consequences are real — it is not keyboard-focusable, not reachable by Tab,
-  not announced as a button by a screen reader, and does not respond to Enter or
-  Space. Every action in the schedule inspector (Move, Swap, Lock) and the
-  solver control is affected, so the schedule is currently mouse-only.
+- **~~`CommonButton` renders a `<div>`~~ — FIXED.** It rendered a `<div>` with a
+  click handler, so every action built on it — the whole schedule inspector, the
+  solver control, the palette — was mouse-only: no Tab, no Enter/Space, not
+  announced as a button. `getTag` now defaults to `'button'` (including the
+  disabled case, so assistive tech hears "unavailable" rather than nothing).
 
-  Not fixed with the Stage-5 bug batch because it is a shared component used
-  across the app and changing its root element is a visual and behavioural change
-  everywhere at once, not a local fix. Worth doing deliberately: swap the root for
-  a real `<button type="button">`, keep the classes, and check the places that
-  pass `width="100%"` still lay out.
+  Two things that made this less trivial than it looks, worth not rediscovering:
+
+  - **`type` was already taken** by the visual variant (`primary`,
+    `secondary-black`…), so the native button type needed its own prop:
+    `nativeType`, defaulting to `'button'`. Without that default, changing the
+    tag would have turned every button inside a `<form>` into an accidental
+    submit.
+  - **`login.vue` and `change-password.vue` depended on native submit.** They
+    passed `tag="button"` with NO `@click`, relying on the form's
+    `@submit.prevent` so Enter works in either field. They now pass
+    `native-type="submit"` — verified by pressing Enter in the password field and
+    landing on `/`.
+
+  A native `<button>` also inherits the UA font rather than the page's, so
+  `font: inherit` was added to `.button`; computed font now matches `body` on
+  every page.
 
 - **`CommonButton` accepts two variants it does not style.** Callers pass
   `transparent` (`CommonChevron.vue`) and `secondary-875`

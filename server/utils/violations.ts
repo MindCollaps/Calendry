@@ -133,13 +133,36 @@ export async function refreshViolations(tx: Tx, options: RefreshOptions): Promis
 
     const involvedIds = [...new Set([...seeds.map((s) => s.id), ...candidates.map((c) => c.id)])];
 
-    const [rooms, people, groups] = await Promise.all([
+    const [rooms, people, groups, virtualRooms] = await Promise.all([
         tx.sessionRoom.findMany({ where: { sessionId: { in: involvedIds } }, select: { sessionId: true, roomId: true } }),
         tx.sessionPerson.findMany({ where: { sessionId: { in: involvedIds } }, select: { sessionId: true, personId: true } }),
         tx.sessionGroup.findMany({ where: { sessionId: { in: involvedIds } }, select: { sessionId: true, groupId: true } }),
+        tx.room.findMany({ where: { isVirtual: true }, select: { id: true } }),
     ]);
 
-    const byRoom = groupBy(rooms, 'sessionId', 'roomId');
+    const virtualRoomIds = new Set(virtualRooms.map((room) => room.id));
+
+    /**
+     * Virtual rooms host unlimited concurrent sessions — that is what "online"
+     * means, and TAXONOMY.md models online delivery AS a room precisely so
+     * room-assignment logic stays uniform. Two lectures streaming at the same
+     * hour are not a collision.
+     *
+     * Excluded HERE, at the construction site, rather than inside
+     * `describeCollision`: `byRoom` is the only input the room check has, so a
+     * future check that reads it cannot forget the exemption. Keyed on the
+     * `is_virtual` FLAG rather than on a well-known "online" room, because
+     * nothing restricts a tenant to a single virtual room.
+     *
+     * NOTE the solver does NOT yet make this exemption — see the tracked
+     * cross-repo item in CLAUDE.md. Until it does, the two disagree, and the
+     * solver's is the more damaging half.
+     */
+    const byRoom = groupBy(
+        rooms.filter((row) => !virtualRoomIds.has(row.roomId)),
+        'sessionId',
+        'roomId',
+    );
     const byPerson = groupBy(people, 'sessionId', 'personId');
     const byGroup = groupBy(groups, 'sessionId', 'groupId');
 

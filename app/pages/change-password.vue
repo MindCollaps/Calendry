@@ -45,7 +45,7 @@
             >{{ error }}</p>
 
             <common-button
-                tag="button"
+                native-type="submit"
                 type="primary"
                 width="100%"
                 :disabled="busy"

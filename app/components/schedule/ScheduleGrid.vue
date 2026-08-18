@@ -260,6 +260,19 @@ function slotStyle(placement: SessionPlacement) {
         pointer-events: none;
 
         > * { pointer-events: auto; }
+
+        /*
+         * While PLACING, chips stop intercepting clicks so the cell beneath is
+         * reachable. Without this a chip covers its own cell, so an occupied
+         * slot could not be chosen as a destination at all — measured at 26 of
+         * 40 target cells unreachable — and clicking one selected that session
+         * and silently cancelled the move instead.
+         *
+         * This is the other half of the mode rule: in `place` the CELLS are the
+         * targets, so chips must be inert. In `swap` the chips ARE the targets,
+         * so they stay live and the cells are the disabled ones.
+         */
+        .grid--placing & > * { pointer-events: none; }
     }
 }
 </style>

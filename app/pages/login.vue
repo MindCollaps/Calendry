@@ -41,12 +41,14 @@
             >{{ error }}</p>
 
             <!--
-                tag="button" inside a <form> submits natively, so Enter in
-                either field works and the @submit.prevent handler is the single
-                entry point. No @click here — that would fire the handler twice.
+                native-type="submit" makes this a real submit button inside the
+                <form>, so Enter in either field works and the @submit.prevent
+                handler is the single entry point. No @click here — that would
+                fire the handler twice. CommonButton defaults to type="button",
+                so this opt-in is what keeps Enter-to-submit working.
             -->
             <common-button
-                tag="button"
+                native-type="submit"
                 type="primary"
                 width="100%"
                 :disabled="busy"
