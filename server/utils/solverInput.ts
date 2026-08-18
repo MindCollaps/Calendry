@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto';
 import { SolverInput } from '@mindcollaps/calendry-proto';
-import type { ConstraintConfig, Offering, Person, Room, SlotRef } from '@mindcollaps/calendry-proto';
+import type {
+    ConstraintConfig, ExternalOccupancy, Offering, Person, Room, SlotRef,
+} from '@mindcollaps/calendry-proto';
 import type { Tx } from './tenantDb';
 import {
     TermEndedError,
     buildAcademicCalendar,
     computeReferenceSlot,
+    isoWeekday,
+    mondayOf,
     toWireTimeGrid,
 } from './solverCalendar';
 import { multiRoomSessionIds, toWireSession } from './solverSessions';
@@ -34,7 +38,10 @@ import {
 
 /** Everything narrowed or dropped on the way to the wire. Returned, never swallowed. */
 export interface AssemblyReport {
-    excludedFederationRooms: number;
+    /** Federation-shared Rooms now sent to the solver (Stage 7b). */
+    includedFederationRooms: number;
+    /** Slots other tenants already occupy on those shared Rooms. */
+    externalOccupancySlots: number;
     excludedFederationOfferings: number;
     /** Sessions whose extra Rooms the wire cannot carry (see CLAUDE.md). */
     multiRoomSessions: string[];
@@ -201,7 +208,18 @@ export async function assembleSolverInput(
     const [roomRows, personRows, groupRows, offeringRows, sessionRows, constraintRows, lecturerRole] =
         await Promise.all([
             tx.room.findMany({
-                where: { tenantId: options.tenantId, isActive: true },
+                /**
+                 * Federation-owned Rooms are included alongside the tenant's own
+                 * (Stage 7b). RLS already narrows `federationId IS NOT NULL` to
+                 * the caller's OWN federation, so this cannot widen past it.
+                 */
+                where: {
+                    isActive: true,
+                    OR: [
+                        { tenantId: options.tenantId },
+                        { tenantId: null, federationId: { not: null } },
+                    ],
+                },
                 include: { roomEquipment: { include: { equipment: true } } },
             }),
             tx.person.findMany({
@@ -230,21 +248,27 @@ export async function assembleSolverInput(
         ]);
 
     /**
-     * Federation-owned rows are visible to this tenant through the widened RLS
-     * read policy, so they arrive in these queries and must be filtered out
-     * explicitly. Counted, because "your shared lecture hall was not considered"
-     * is something the caller needs told.
+     * Federation-owned ROOMS are now included (Stage 7b) — they arrive through
+     * the widened RLS read policy and are sent with the other tenants' occupancy
+     * of them, so the solver can place into a shared hall without overlapping
+     * somebody else's event.
+     *
+     * Federation-owned OFFERINGS remain excluded, deliberately and separately:
+     * placing one raises "which tenant owns the resulting Session?", which is a
+     * placement-ownership question rather than an occupancy one and deserves its
+     * own decision.
      */
-    const federationRooms = await tx.room.count({
-        where: { federationId: { not: null }, tenantId: null, isActive: true },
-    });
+    const includedFederationRooms = roomRows.filter((room) => room.federationId !== null).length;
     const federationOfferings = await tx.offering.count({
         where: { federationId: { not: null }, tenantId: null, termId: term.id, isActive: true },
     });
 
     const rooms: Room[] = roomRows.map((room) => ({
         id: room.id,
-        tenantId: options.tenantId,
+        // Ownership reported honestly: a shared hall belongs to the federation,
+        // not to the requesting tenant, and the solver distinguishes the two.
+        tenantId: room.tenantId ?? '',
+        federationId: room.federationId ?? '',
         name: `${room.code} · ${room.name}`,
         capacity: room.capacity,
         // Same direction on both sides: HIGHER = more premium/scarce.
@@ -362,12 +386,63 @@ export async function assembleSolverInput(
         term.calendarPeriods.map((p) => ({ kind: p.kind, startDate: p.startDate, endDate: p.endDate })),
     );
 
+    /**
+     * Other tenants' use of Federation-shared Rooms.
+     *
+     * Read through the parameterless SECURITY DEFINER function, because those
+     * Sessions belong to sibling tenants and are invisible under normal RLS —
+     * which is the whole reason shared rooms were excluded until now. What comes
+     * back is occupancy and nothing else: no session ids, no tenant ids, no
+     * titles.
+     */
+    const occupancyRows = tenant.federationId
+        ? await tx.$queryRaw<{
+            room_id: string;
+            occupied_on: Date;
+            block_index: number;
+            duration_blocks: number;
+        }[]>`SELECT * FROM calendry_internal.federation_room_occupancy()`
+        : [];
+
+    /**
+     * Map each occupied DATE into this tenant's own week numbering.
+     *
+     * The function returns absolute dates because term-relative weeks are not a
+     * shared frame: terms are tenant-scoped rows, so the other tenant's term id
+     * never matches ours and its "week 3" is not our "week 3". The calendar is
+     * the one frame a Federation agrees on, so the conversion happens here,
+     * anchored on the same Monday `buildAcademicCalendar` uses.
+     */
+    const firstMonday = mondayOf(term.startDate);
+
+    const externalOccupancy: ExternalOccupancy[] = occupancyRows
+        .map((row) => {
+            const date = new Date(row.occupied_on);
+            const week = Math.floor(
+                (mondayOf(date).getTime() - firstMonday.getTime()) / (7 * 24 * 60 * 60 * 1000),
+            );
+
+            return { row, date, week };
+        })
+        // Occupancy outside this term's span tells the solver nothing — it can
+        // only place within the weeks the calendar declares.
+        .filter(({ week }) => week >= 0 && week < (calendar.weeks?.length ?? 0))
+        .map(({ row, date, week }) => ({
+            roomId: row.room_id,
+            // Already 0-based: `week` counts from the term's first Monday, which
+            // is exactly what SlotRef.week means on the wire.
+            startSlot: { week, day: isoWeekday(date), block: row.block_index },
+            durationBlocks: row.duration_blocks,
+            // Documented as "opaque; diagnostics only" — deliberately carries no
+            // identifier, so nothing about the owning tenant leaks through it.
+            sourceRef: 'federation-shared',
+        } as ExternalOccupancy));
+
     const input: SolverInput = {
         requestingTenantId: options.tenantId,
-        // Empty even when the tenant HAS a federation: Stages 1–6 are
-        // non-federated, and claiming otherwise would invite the solver to
-        // reason about shared resources this snapshot does not carry.
-        federationId: '',
+        // Now real: the snapshot carries federation-shared rooms and the
+        // occupancy that makes them safe to place into.
+        federationId: tenant.federationId ?? '',
         timeGrid: toWireTimeGrid(grid, tenant.timezone),
         calendar,
         rooms,
@@ -375,7 +450,7 @@ export async function assembleSolverInput(
         groups,
         offerings,
         existingSessions: sessionInputs.map(toWireSession),
-        externalOccupancy: [],
+        externalOccupancy,
         constraints,
         referenceSlot,
     };
@@ -385,7 +460,8 @@ export async function assembleSolverInput(
         referenceSlot,
         inputHash: hashInput(input),
         report: {
-            excludedFederationRooms: federationRooms,
+            includedFederationRooms,
+            externalOccupancySlots: externalOccupancy.length,
             excludedFederationOfferings: federationOfferings,
             multiRoomSessions: multiRoomSessionIds(sessionInputs),
             droppedEquipmentQuantities,
