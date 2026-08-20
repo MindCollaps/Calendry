@@ -137,18 +137,43 @@ export async function planMaterialization(tx: Tx, options: {
     output: SolverOutput;
     /** Offerings the run was allowed to place. Anything else is out of scope. */
     scopeOfferingIds: string[];
+    /** Set when the tenant belongs to a Federation, so shared Sessions are seen. */
+    federationId?: string | null;
 }): Promise<MaterializationPlan> {
-    const { tenantId, termId, output, scopeOfferingIds } = options;
+    const { tenantId, federationId = null, termId, output, scopeOfferingIds } = options;
 
     const inScope = new Set(scopeOfferingIds);
 
-    const existing = await tx.session.findMany({
-        where: { tenantId, termId },
+    /**
+     * TWO SETS, deliberately (Stage 7c).
+     *
+     * `visible` is everything this tenant can see, INCLUDING Federation-shared
+     * Sessions — needed so the plan is aware of them. `existing` is the strictly
+     * tenant-owned subset, and is the only thing the plan may move or delete.
+     *
+     * Widening this to one set would have been the dangerous version: a member
+     * tenant's solver run would treat a shared Session it did not return as an
+     * "orphan" and delete another tenant's event. RLS would refuse the write, so
+     * the visible failure would be a 500 mid-apply — but the intent would
+     * already have been wrong, and a future privileged path would make it real.
+     */
+    const visible = await tx.session.findMany({
+        where: {
+            termId,
+            OR: [
+                { tenantId },
+                ...(federationId ? [{ federationId }] : []),
+            ],
+        },
         select: {
-            id: true, offeringId: true, isLocked: true,
+            id: true, tenantId: true, offeringId: true, isLocked: true,
             termWeek: true, dayOfWeek: true, blockIndex: true, durationBlocks: true,
         },
     });
+
+    // Tenant-keyed explicitly rather than by absence: `tenantId === options
+    // .tenantId` is the ownership test, and nothing else may be mutated.
+    const existing = visible.filter((session) => session.tenantId === tenantId);
 
     const existingById = new Map(existing.map((s) => [s.id, s]));
 
@@ -392,10 +417,13 @@ export async function materializeGeneration(tx: Tx, options: {
     generationId: string;
     output: SolverOutput;
     scopeOfferingIds: string[];
+    federationId?: string | null;
 }): Promise<MaterializeCounts> {
-    const { tenantId, termId, generationId, output, scopeOfferingIds } = options;
+    const { tenantId, federationId = null, termId, generationId, output, scopeOfferingIds } = options;
 
-    const plan = await planMaterialization(tx, { tenantId, termId, output, scopeOfferingIds });
+    const plan = await planMaterialization(tx, {
+        tenantId, federationId, termId, output, scopeOfferingIds,
+    });
 
     return executePlan(tx, plan, {
         tenantId,

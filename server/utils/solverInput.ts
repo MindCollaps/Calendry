@@ -237,7 +237,19 @@ export async function assembleSolverInput(
                 },
             }),
             tx.session.findMany({
-                where: { tenantId: options.tenantId, termId: term.id },
+                /**
+                 * Own Sessions plus Federation-shared ones (Stage 7c). A shared
+                 * event occupies a room and a slot the solver must respect; it
+                 * is sent as immovable occupancy, which `toWireSession` enforces
+                 * by forcing isLocked when the Session has no owning tenant.
+                 */
+                where: {
+                    termId: term.id,
+                    OR: [
+                        { tenantId: options.tenantId },
+                        ...(tenant.federationId ? [{ federationId: tenant.federationId }] : []),
+                    ],
+                },
                 include: { kind: true, rooms: true, people: true, groups: true },
             }),
             tx.constraint.findMany({

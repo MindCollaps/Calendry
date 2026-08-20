@@ -223,6 +223,7 @@ model Federation {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   tenants   Tenant[]
+  sessions   Session[]
   rooms     Room[]
   equipment Equipment[]
   offerings Offering[]
@@ -794,8 +795,14 @@ model OfferingEquipment {
 /// ends_at are DERIVED convenience columns for iCal export and UI rendering —
 /// never the source of truth for "same day" or "adjacent slot" logic.
 model Session {
-  id       String @id @default(uuid(7))
-  tenantId String @map("tenant_id")
+  id String @id @default(uuid(7))
+
+  /// Exactly one of tenantId / federationId is set, enforced by the
+  /// `session_one_owner` CHECK. A federation-owned Session is a genuinely
+  /// shared event (TAXONOMY.md §2 amendment) — readable by every member tenant,
+  /// writable by none of them.
+  tenantId     String? @map("tenant_id")
+  federationId String? @map("federation_id")
 
   offeringId String  @map("offering_id")
   termId     String  @map("term_id")
@@ -831,7 +838,8 @@ model Session {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant     Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  federation Federation? @relation(fields: [federationId], references: [id], onDelete: Cascade)
   offering   Offering    @relation(fields: [offeringId], references: [id], onDelete: Cascade)
   term       Term        @relation(fields: [termId], references: [id], onDelete: Cascade)
   kind       SessionKind @relation(fields: [kindId], references: [id], onDelete: Restrict)
@@ -847,6 +855,7 @@ model Session {
   counterpartEvents SessionEvent[] @relation("EventCounterpart")
 
   @@index([tenantId])
+  @@index([federationId])
   @@index([offeringId])
   @@index([generationId])
   @@index([tenantId, termId, termWeek, dayOfWeek, blockIndex])

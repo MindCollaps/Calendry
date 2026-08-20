@@ -86,6 +86,7 @@ export default defineEventHandler(async (event) => {
 
             const plan = await planMaterialization(tx, {
                 tenantId: identity.tenantId,
+                federationId: identity.federationId,
                 termId: stored.termId,
                 output,
                 scopeOfferingIds: scope.offeringIds ?? [],

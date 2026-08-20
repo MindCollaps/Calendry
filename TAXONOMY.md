@@ -47,16 +47,43 @@ same `tenant_id`/`federation_id` nullable pair + `CHECK` exactly one is
 set + RLS predicate (`tenant_id = current_tenant() OR federation_id =
 current_federation()`) that `Room`/`Offering` already have.
 
-**Consequence needing follow-up implementation work** (app repo, not
-solver): the relation tables built in Step 13 (`session_group`,
-`session_person`, etc.) need their RLS extended to permit a
-federation-shared Session to reference Groups/Persons from *either*
-member tenant — they were only ever designed against the two-table
-exception and don't yet support this. Affected-person notification
-resolution also needs to walk Membership trees across both tenants for
-this specific case, not just one. Flag as a required schema/RLS
-amendment before shared-event Sessions can actually be created, not an
-automatic consequence of this decision alone.
+**Implemented in Stage 7c, with one deliberate narrowing of the wording above.**
+
+The original amendment said the relation tables (`session_group`,
+`session_person`, `session_room`) would need their RLS extended to let a shared
+Session reference Groups and Persons from *either* member tenant. Implemented
+literally, that requires widening RLS on `group` and `person` — the two most
+sensitive tenant-scoped tables in the system — so that Federation membership
+would imply **roster visibility**. That is a far larger concession than sharing
+one `session` row, and it is not what the use case needs.
+
+What was built instead:
+
+- **The Session row is shared.** `tenant_id`/`federation_id` nullable pair, a
+  `CHECK` that exactly one is set, and the `tenant_or_federation_read` +
+  `tenant_write` policy pair `room`/`offering` already use. Readable by every
+  member tenant, writable by none of them.
+- **`session_room` is widened**, following `room_equipment`'s precedent — an
+  `EXISTS` against the parent Session's federation ownership. *Where* a shared
+  event happens is genuinely shared information.
+- **`session_group` and `session_person` stay tenant-private**, keeping their
+  plain `tenant_isolation` policy. Each tenant sees the shared event and *its
+  own* groups and people on it, and never the other tenant's.
+
+A university-wide celebration is therefore one event both tenants see and attach
+their own cohorts to, without either enumerating the other's people.
+
+**The predicted notification consequence largely dissolves.** Because participant
+links stay tenant-private, affected-person resolution does NOT need to walk
+Membership trees across two tenants — each tenant resolves its own audience
+through the existing per-tenant path, unchanged. A genuinely federation-wide
+notification would need a privileged union, but that is Federation-level
+permissions, which §9.4 places out of scope.
+
+**No creation path exists yet, deliberately.** Nothing in the app can create a
+federation-owned Session: doing so is a privileged action and federation-level
+permissions remain out of scope (§9.4). Stage 7c makes the schema and RLS
+*capable*; opening a door is a separate decision.
 
 ### Scheduling — two-level model
 - **`Offering`** [FIXED] — the *demand* definition: "this needs to happen N times, needs a Lecturer with role X, a Group, a Room with equipment Y, kind Z." Roughly maps to the prototype's `lectures[lecture]` frequency concept. This is the solver's input.

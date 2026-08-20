@@ -18,14 +18,12 @@ import type { Session as WireSession } from '@mindcollaps/calendry-proto';
 export interface AppSessionRow {
     id: string;
     /**
-     * NOT nullable, unlike Room/Equipment/Offering: `session` has no
-     * `federation_id` column. TAXONOMY.md carries an amendment making Session a
-     * third federation-shareable entity, but it is NOT implemented in this
-     * schema and is deferred to Stage 7 — so the wire's `owner` oneof only ever
-     * takes its tenant branch here. Typing it as optional invited exactly the
-     * mistake the compiler caught: reading a column that does not exist.
+     * Nullable since Stage 7c, like Room/Equipment/Offering: exactly one of
+     * these is set, enforced by the `session_one_owner` CHECK. A
+     * federation-owned Session is a shared event no member tenant owns.
      */
-    tenantId: string;
+    tenantId: string | null;
+    federationId?: string | null;
     offeringId: string;
     kindId: string;
     termWeek: number;
@@ -64,10 +62,9 @@ export function fromWireWeek(week: number): number {
 export function toWireSession(row: AppSessionRow): WireSession {
     return {
         id: row.id,
-        // The oneof owner, always the tenant branch — see the note on
-        // AppSessionRow.tenantId. When Stage 7 makes Session federation-
-        // shareable this becomes a real choice.
-        tenantId: row.tenantId,
+        // The oneof owner is now a real choice: tenant-owned or shared.
+        tenantId: row.tenantId ?? '',
+        federationId: row.federationId ?? '',
         offeringId: row.offeringId,
         kind: row.kindKey,
         startSlot: {
@@ -83,7 +80,19 @@ export function toWireSession(row: AppSessionRow): WireSession {
         lecturerIds: row.lecturerIds,
         groupIds: row.groupIds,
         personIds: row.personIds,
-        isLocked: row.isLocked,
+        /**
+         * A federation-shared Session is ALWAYS immovable to a member tenant.
+         *
+         * The RLS write policy already refuses to let this tenant change it, so
+         * a solver that "moved" one would produce a placement the app could
+         * never apply — and `materializeGeneration` would then either fail or,
+         * worse, silently skip it. Sending it locked makes the constraint the
+         * solver reasons with match the constraint the database enforces.
+         *
+         * The proto anticipates exactly this: existingSessions is documented as
+         * carrying "Federation-owned Sessions that act purely as occupancy".
+         */
+        isLocked: row.isLocked || row.tenantId === null,
     } as WireSession;
 }
 

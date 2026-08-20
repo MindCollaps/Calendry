@@ -106,6 +106,7 @@ export default defineEventHandler(async (event) => {
 
                 materialized = await mapDbErrors(() => materializeGeneration(tx, {
                     tenantId: identity.tenantId,
+                    federationId: identity.federationId,
                     termId: run.termId,
                     generationId: generation.id,
                     output: SolverOutput.fromJSON(run.result),
@@ -143,6 +144,7 @@ export default defineEventHandler(async (event) => {
 
             await refreshViolations(tx, {
                 tenantId: identity.tenantId,
+                federationId: identity.federationId,
                 sessionIds: affected.map((s) => s.id),
                 detectedByEventId: logged.id,
                 generationId: generation.id,

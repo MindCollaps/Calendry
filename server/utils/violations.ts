@@ -42,7 +42,8 @@ export type { StructuralConstraintType } from '../../shared/constraintTypes';
 
 interface PlacedSession {
     id: string;
-    tenantId: string;
+    /** Null for a Federation-shared Session — it belongs to no member tenant. */
+    tenantId: string | null;
     termId: string;
     kindId: string;
     offeringId: string;
@@ -65,6 +66,8 @@ function blocksOverlap(a: PlacedSession, b: PlacedSession): boolean {
 
 interface RefreshOptions {
     tenantId: string;
+    /** Set when the tenant belongs to a Federation, so shared Sessions count. */
+    federationId?: string | null;
     sessionIds: string[];
     detectedByEventId?: string | null;
     generationId?: string | null;
@@ -78,7 +81,23 @@ interface RefreshOptions {
  * is never stale relative to the event that caused it.
  */
 export async function refreshViolations(tx: Tx, options: RefreshOptions): Promise<number> {
-    const { tenantId, sessionIds, detectedByEventId = null, generationId = null } = options;
+    const {
+        tenantId, federationId = null, sessionIds,
+        detectedByEventId = null, generationId = null,
+    } = options;
+
+    /**
+     * Sessions this tenant must consider for collisions: its own, plus any
+     * Federation-shared ones. A shared event occupies a real room in a real
+     * slot, so excluding it would report a clean schedule that is not.
+     *
+     * Only ever used for READING. Violations themselves stay tenant-scoped —
+     * `constraint_violation.tenant_id` is this tenant's row about its own
+     * schedule, even when the other party is a shared Session.
+     */
+    const visibleToTenant = federationId
+        ? [{ tenantId }, { federationId }]
+        : [{ tenantId }];
 
     if (sessionIds.length === 0) {
         return 0;
@@ -102,7 +121,7 @@ export async function refreshViolations(tx: Tx, options: RefreshOptions): Promis
     }
 
     const seeds = (await tx.session.findMany({
-        where: { tenantId, id: { in: sessionIds } },
+        where: { OR: visibleToTenant, id: { in: sessionIds } },
         select: {
             id: true, tenantId: true, termId: true, kindId: true, offeringId: true,
             termWeek: true, dayOfWeek: true, blockIndex: true, durationBlocks: true,
@@ -118,12 +137,14 @@ export async function refreshViolations(tx: Tx, options: RefreshOptions): Promis
     // scanning the term.
     const candidates = (await tx.session.findMany({
         where: {
-            tenantId,
-            OR: seeds.map((s) => ({
-                termId: s.termId,
-                termWeek: s.termWeek,
-                dayOfWeek: s.dayOfWeek,
-            })),
+            OR: visibleToTenant,
+            AND: [{
+                OR: seeds.map((s) => ({
+                    termId: s.termId,
+                    termWeek: s.termWeek,
+                    dayOfWeek: s.dayOfWeek,
+                })),
+            }],
         },
         select: {
             id: true, tenantId: true, termId: true, kindId: true, offeringId: true,

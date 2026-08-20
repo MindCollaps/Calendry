@@ -29,7 +29,19 @@ export default defineEventHandler(async (event) => {
     return withRequestTenant(event, async (tx, identity) => {
             await requirePermission(event, tx, 'session.read');
 
-        const where: Record<string, unknown> = { tenantId: identity.tenantId };
+        /**
+         * Own Sessions plus Federation-shared ones (Stage 7c).
+         *
+         * A shared event must appear on every member tenant's timetable — that
+         * is the entire point of making Session federation-ownable. RLS would
+         * permit the read either way; this is what actually ASKS for them.
+         */
+        const where: Record<string, unknown> = {
+            OR: [
+                { tenantId: identity.tenantId },
+                ...(identity.federationId ? [{ federationId: identity.federationId }] : []),
+            ],
+        };
 
         if (query.termId) where.termId = query.termId;
         if (query.termWeek !== undefined) where.termWeek = query.termWeek;

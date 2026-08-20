@@ -85,6 +85,7 @@ export default defineEventHandler(async (event) => {
         // relative to the event that caused them.
         await refreshViolations(tx, {
             tenantId: identity.tenantId,
+            federationId: identity.federationId,
             sessionIds: [session.id],
             detectedByEventId: logged.id,
             generationId,
