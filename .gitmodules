@@ -1,3 +1,6 @@
 [submodule ".impeccable"]
 	path = .impeccable
 	url = https://github.com/pbakaus/impeccable
+[submodule "vendor/calendry-solver"]
+	path = vendor/calendry-solver
+	url = https://github.com/MindCollaps/calendry-solver

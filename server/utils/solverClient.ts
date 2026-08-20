@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { credentials } from '@grpc/grpc-js';
 import {
     RunStatus,
@@ -23,8 +24,29 @@ import type { SolverRunStatus } from '@prisma/client';
 /** Reused across requests — a channel is expensive and safely shared. */
 let client: SolverServiceClient | undefined;
 
+/**
+ * Where the solver is, from wherever this process happens to be running.
+ *
+ * Two addresses for one service, the same shape the database already uses
+ * (`MIGRATION_DATABASE_URL` / `..._HOST`): `solver:50051` resolves only on the
+ * compose network, while host-run tooling — `bun run test`, which starts a Nuxt
+ * server outside compose, plus the CLI scripts — needs the published port.
+ * Neither value works in both places, so the environment cannot simply prefer
+ * whichever is set; it is selected by asking where we are.
+ *
+ * `/.dockerenv` is the same probe `scripts/lib/ownerDatabaseUrl.ts` uses, for
+ * the same reason.
+ */
 export function solverAddress(): string {
-    return process.env.CALENDRY_SOLVER_ADDR ?? '127.0.0.1:50051';
+    const inContainer = existsSync('/.dockerenv');
+
+    if (inContainer) {
+        return process.env.CALENDRY_SOLVER_ADDR ?? 'solver:50051';
+    }
+
+    return process.env.CALENDRY_SOLVER_ADDR_HOST
+        ?? process.env.CALENDRY_SOLVER_ADDR
+        ?? '127.0.0.1:50051';
 }
 
 export function getSolverClient(): SolverServiceClient {

@@ -19,6 +19,15 @@ services:
       interval: 30s
       timeout: 20s
       retries: 10
+  solver:
+    # Same shape as calendry-app: a published image in production, built from
+    # the vendored submodule by the dev override.
+    image: ghcr.io/mindcollaps/calendry-solver:latest
+    container_name: calendry-solver
+    environment:
+      - CALENDRY_SOLVER_ADDR=0.0.0.0:50051
+    restart: unless-stopped
+
   db:
     image: 'postgres:18.1-alpine'
     container_name: calendry-db

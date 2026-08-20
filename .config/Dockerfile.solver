@@ -1,0 +1,56 @@
+# calendry-solver — built from the vendored submodule at vendor/calendry-solver.
+#
+# The Dockerfile lives HERE rather than in the solver repo so the whole stack is
+# described in one place: `docker compose up` builds and runs app, database and
+# solver together, and nobody has to know that the solver is a separate project
+# to get a working environment.
+#
+# Build context is the SUBMODULE directory, not the repo root — the Rust build
+# has no business seeing the Nuxt tree, and a narrow context keeps the layer
+# cache from busting on every frontend edit.
+
+# rust-version = "1.90" and edition 2024 in the workspace manifest, so the
+# toolchain floor is real rather than incidental.
+FROM rust:1.90-slim-bookworm AS build
+
+WORKDIR /src
+
+# protoc is a build dependency: calendry-proto arrives as a git submodule of the
+# solver and is compiled by build.rs, not fetched as a prebuilt crate.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends protobuf-compiler pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Manifests first, so the dependency compile is cached and only re-runs when the
+# manifests actually change. A source edit then rebuilds just the workspace
+# crates rather than the entire dependency graph.
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY vendor ./vendor
+
+RUN cargo build --release --bin calendry-solver \
+    && strip target/release/calendry-solver
+
+# ---------------------------------------------------------------------------
+
+FROM debian:bookworm-slim AS runtime
+
+# ca-certificates only; the solver speaks gRPC over plain TCP inside the compose
+# network and needs nothing else at runtime.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home solver
+
+COPY --from=build /src/target/release/calendry-solver /usr/local/bin/calendry-solver
+
+USER solver
+
+# 0.0.0.0, not 127.0.0.1: the solver's default binds to its own loopback, which
+# inside a container is reachable by nothing. This is the whole reason a
+# host-run solver was unreachable from the app container.
+ENV CALENDRY_SOLVER_ADDR=0.0.0.0:50051
+
+EXPOSE 50051
+
+ENTRYPOINT ["/usr/local/bin/calendry-solver"]

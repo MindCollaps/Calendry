@@ -13,6 +13,9 @@ services:
       - NODE_ENV=development
       - PORT=3000
       - HOME=/app
+      # `environment` beats `env_file`, so this overrides .env's HOST value
+      # without editing it — host-run tooling still needs 127.0.0.1 there.
+      - CALENDRY_SOLVER_ADDR=solver:50051
       # ⚠ UNVERIFIED — NEEDS REVISITING. Left in place so it is not forgotten,
       # but do not trust it until someone actually runs `docker compose up`.
       #
@@ -43,6 +46,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      solver:
+        condition: service_started
 
   db:
     # Must match docker-compose.yml — dev and prod on different major versions
@@ -60,3 +65,21 @@ services:
       # Compose replaces volume lists rather than merging them, so the runtime
       # role provisioning from docker-compose.yml must be repeated here.
       - ./.config/db-init:/docker-entrypoint-initdb.d:ro
+
+  solver:
+    build:
+      # The vendored submodule, so `docker compose up` needs no second checkout.
+      context: ./vendor/calendry-solver
+      dockerfile: ../../.config/Dockerfile.solver
+    container_name: calendry-solver
+    environment:
+      # Bind on all interfaces INSIDE the container. Its own default is
+      # 127.0.0.1, which nothing outside the container can reach.
+      - CALENDRY_SOLVER_ADDR=0.0.0.0:50051
+    # Published for HOST-side tooling only, exactly like the database's 55432:
+    # `bun run test` starts a Nuxt server on the host, outside the compose
+    # network, where the `solver` hostname does not resolve. Production
+    # publishes nothing.
+    ports:
+      - "50051:50051"
+    restart: unless-stopped

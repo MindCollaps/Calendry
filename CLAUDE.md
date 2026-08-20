@@ -1070,6 +1070,42 @@ Both migrations also begin with `SET search_path = public;` as a second line of
 defence. Note the **GUC names stay `calendry.tenant_id` / `calendry.federation_id`** —
 session settings are a different namespace from schemas and were not renamed.
 
+### The solver runs as a compose service, and has two addresses
+
+`docker compose up` now brings up app, database AND solver. The solver is a
+vendored git submodule at `vendor/calendry-solver`, built by
+`.config/Dockerfile.solver` — the Dockerfile lives HERE rather than in the solver
+repo so the whole stack is described in one place, and nobody needs a second
+checkout to get a working environment.
+
+**It has its own nested submodule.** `calendry-proto` sits at
+`vendor/calendry-solver/vendor/calendry-proto`, so a plain `git submodule update
+--init` is not enough — it needs `--recursive`, or the Rust build fails in
+`build.rs` with a (very clear) message about the proto directory being absent.
+
+**`CALENDRY_SOLVER_ADDR` means two different things**, which is the trap to know:
+
+- on the **solver** it is where to BIND. Its own default is `127.0.0.1:50051`,
+  which inside a container is reachable by nothing, so the compose service sets
+  `0.0.0.0:50051`.
+- on the **app** it is where to CONNECT.
+
+That is why a host-run solver was unreachable from the app container twice: the
+address was right for a host-run app and meaningless from inside a container, and
+the solver was bound to loopback so even the bridge gateway was refused.
+
+**Two addresses, same pattern as the two database URLs.** `solver:50051` resolves
+only on the compose network; `bun run test` starts a Nuxt server on the HOST,
+where it does not. So `solverAddress()` picks by testing for `/.dockerenv`,
+exactly as `scripts/lib/ownerDatabaseUrl.ts` does — `CALENDRY_SOLVER_ADDR` inside,
+`CALENDRY_SOLVER_ADDR_HOST` outside. Port 50051 is published in the dev override
+for the same reason 55432 is: host-side tooling. Production publishes neither.
+
+**`docker compose up -d <service>` does not start what it does not name.** Bringing
+up only `solver` and `calendry-app` left the database stopped and every test
+failed with "Can't reach database server at 127.0.0.1:55432", which looks like a
+configuration bug and is not one. Use a bare `docker compose up -d`.
+
 ### Two database URLs, one database
 
 `MIGRATION_DATABASE_URL` uses `db:5432`, which resolves only between compose
