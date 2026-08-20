@@ -312,10 +312,13 @@ otherwise" is not one.
 - [x] Schedule view + editor UI
 - [x] Management UI for the core entities + Ctrl+K command palette
 - [ ] AccessRole / permission management UI (Step 14)
-- [x] **Solver integration Stages 1–6 — COMPLETE.** Start a solve, never lose
-      the result, review it, apply or discard it. Stage 7 (Federation +
-      PersonDoubleBooking) remains, and one standalone fix is outstanding
-      first — see "a terminal run whose result was never captured" below.
+- [x] **Solver integration Stages 1–7 — COMPLETE.** Start a solve, never lose
+      the result, review it, apply or discard it; person-level clash detection,
+      Federation-shared Rooms with real cross-tenant occupancy, and
+      federation-shareable Sessions. Two things remain, both recorded below:
+      the solver's own virtual-room capacity-1 bug (cross-repo, not fixable
+      here) and the absence of any path to CREATE an AccessRole, which blocks
+      viewer-account regression tests.
 - [ ] Import (CSV/Excel)
 - [ ] Export (iCal/Google/Outlook)
 - [ ] Notifications (delivery; audience resolution already exists)
@@ -482,7 +485,7 @@ proto:
 | ~~4~~ | **DONE.** Background poller (`server/plugins/solverPoller.ts`) owns advancing runs and capturing results; on-demand `GET /runs/:id` is latency only. Adaptive cadence, `FOR UPDATE SKIP LOCKED` claim, NOT_FOUND→FAILED. |
 | ~~5~~ | **DONE.** `generationFromRun.ts` (poller creates a READY Generation on SUCCEEDED) + `generationMaterialize.ts` (create/move/unchanged/delete partition, violations onto `constraint_violation`). Verified both ways: a clean run applied end to end, and an over-constrained SUCCEEDED-with-23-violations run applied successfully. Fixed two pre-existing bugs it uncovered — see below. |
 | ~~6~~ | **DONE.** 6a: plan/execute split + `GET /api/generations`, `/:id`, `/:id/preview`, `POST /:id/discard`, `termination_reason` capture. 6b: six-state solver control in the schedule toolbar, honest progress, cancel, run adoption. 6c: `/schedule/review/[id]` — two non-commensurable violation panels, change partition, diff grid, apply/discard. |
-| 7 | Federation support (deferred from 1–6), **and** closing a cross-repo gap found during solver work: this app's own manual-edit evaluator is **missing a PersonDoubleBooking check** — see below. |
+| ~~7~~ | **DONE.** 7a: `no_double_booking_person` in the manual-edit evaluator — both sides expanded to people, intersected by identity. 7b: `federation_room_occupancy()`, a parameterless SECURITY DEFINER function, feeding `externalOccupancy` and unlocking federation-owned Rooms in `SolverInput`. 7c: `session` federation-shareable — shared row, tenant-private participant links, `session_room` widened. |
 
 ### What Stage 2 established, and the one path it could not test
 
@@ -935,6 +938,25 @@ mind, updated the type and left the first type's label behind. Because `type` is
 deleted and recreated. Fixed: the name now follows the type whenever it is still
 an untouched auto-fill, and is never overwritten once someone types their own.
 The mislabelled row was deleted through the API.
+
+### Tracked gap: nothing can CREATE an AccessRole
+
+Found while rebuilding the dev database after it was wiped. `provision:tenant`
+creates `tenant-admin` and `grant:permissions` grants onto a role that already
+exists — but there is no path, CLI or otherwise, to create a NEW AccessRole:
+
+    bun run create:account -- --tenant test --email … --role viewer
+    No access role 'viewer' in tenant 'test'.
+    Available: tenant-admin
+
+So `vic@demo.local` and `viewer6b@calendry.local` cannot be recreated without raw
+SQL, which is exactly the debt the operator CLIs were meant to retire. The
+practical cost is that permission-gated UI regression tests — the 6c viewer check,
+the 6b solver-control gate — cannot run on a rebuilt database.
+
+The fix is either a small `create:role` operator CLI in the same family as
+`create:account` and `grant:permissions`, or Step 14 proper. Until then, assume a
+freshly rebuilt environment has ONE role and no viewer account.
 
 ### Step 14: AccessRole management has no UI and no API
 
