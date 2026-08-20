@@ -311,14 +311,15 @@ otherwise" is not one.
 - [x] Login/profile UI wired to the auth API
 - [x] Schedule view + editor UI
 - [x] Management UI for the core entities + Ctrl+K command palette
-- [ ] AccessRole / permission management UI (Step 14)
+- [ ] AccessRole / permission management UI (Step 14) — the operator CLI
+      `create:role` exists; the tenant-facing UI and its API do not
 - [x] **Solver integration Stages 1–7 — COMPLETE.** Start a solve, never lose
       the result, review it, apply or discard it; person-level clash detection,
       Federation-shared Rooms with real cross-tenant occupancy, and
-      federation-shareable Sessions. Two things remain, both recorded below:
-      the solver's own virtual-room capacity-1 bug (cross-repo, not fixable
-      here) and the absence of any path to CREATE an AccessRole, which blocks
-      viewer-account regression tests.
+      federation-shareable Sessions. One thing remains, recorded below: the
+      solver's own virtual-room capacity-1 bug, which is cross-repo and not
+      fixable here. (The AccessRole gap that blocked viewer-account regression
+      checks is closed — see `create:role`.)
 - [ ] Import (CSV/Excel)
 - [ ] Export (iCal/Google/Outlook)
 - [ ] Notifications (delivery; audience resolution already exists)
@@ -900,8 +901,15 @@ fixed value: it is rotated with `bun run reset:password -- --email
 verify@calendry.local`, which prints a one-time password that must then be changed
 through `POST /api/auth/change-password`. Update `.env` when you rotate it, or the
 next session rediscovers the same dead end.
-`vic@demo.local` can now be recreated through this path whenever that tracked
-cleanup happens.
+
+`vic@demo.local` and `viewer6b@calendry.local` are the two **under-privileged**
+accounts, both holding the `viewer` role (six read permissions, deliberately
+neither `solver.trigger` nor `generation.apply`). Use one of them whenever a
+check is about an affordance being ABSENT — and remember the rule that goes with
+it: assert the surrounding page rendered too, or the test passes for the wrong
+reason. Their passwords are in `.env` as `VIC_ACCOUNT_PASSWORD` and
+`VIEWER_ACCOUNT_PASSWORD`. Recreate the whole set on a rebuilt database with
+`create:role` followed by two `create:account` calls.
 
 ### Tracked gap: severity is validated too late
 
@@ -939,31 +947,65 @@ deleted and recreated. Fixed: the name now follows the type whenever it is still
 an untouched auto-fill, and is never overwritten once someone types their own.
 The mislabelled row was deleted through the API.
 
-### Tracked gap: nothing can CREATE an AccessRole
+### `bun run create:role` — creating an AccessRole in an EXISTING tenant
 
-Found while rebuilding the dev database after it was wiped. `provision:tenant`
-creates `tenant-admin` and `grant:permissions` grants onto a role that already
-exists — but there is no path, CLI or otherwise, to create a NEW AccessRole:
+Found while rebuilding the dev database after it was wiped: `provision:tenant`
+mints exactly one role (`tenant-admin`, at creation) and `grant:permissions` only
+widens a role that already exists, so nothing could create a new one and
+`create:account --role viewer` failed outright. Permission-gated regression
+checks — the 6b solver-control gate, the 6c viewer check — could not run at all.
 
-    bun run create:account -- --tenant test --email … --role viewer
-    No access role 'viewer' in tenant 'test'.
-    Available: tenant-admin
+    bun run create:role -- --tenant test --key viewer --name "Schedule Viewer" \
+        --permissions session.read,group.read,room.read [--description …] \
+        [--dry-run] [--yes]
 
-So `vic@demo.local` and `viewer6b@calendry.local` cannot be recreated without raw
-SQL, which is exactly the debt the operator CLIs were meant to retire. The
-practical cost is that permission-gated UI regression tests — the 6c viewer check,
-the 6b solver-control gate — cannot run on a rebuilt database.
+**This is the one operator CLI whose writes do not need ownership**, and that was
+verified against the live database rather than assumed. `access_role`,
+`access_role_permission` and `person_access_role` are ordinary tenant-scoped
+tables carrying `tenant_isolation` with both USING and WITH CHECK, so the app
+role writes them happily once `calendry.tenant_id` is set — and is refused with a
+foreign `tenant_id` in the payload, or with no context at all.
 
-The fix is either a small `create:role` operator CLI in the same family as
-`create:account` and `grant:permissions`, or Step 14 proper. Until then, assume a
-freshly rebuilt environment has ONE role and no viewer account.
+What the app role *cannot* do is resolve `--tenant <slug>` to an id: `tenant`'s
+policy is `id = current_tenant_id() OR federation_id = current_federation_id()`,
+so finding a tenant by slug requires already knowing which tenant you are. A
+fifth `SECURITY DEFINER` lookup would fix that and was deliberately declined —
+"an operator CLI would like a nicer argument" is not the comparably strong reason
+the four existing exceptions each have.
+
+So the owner connection resolves the slug, and the transaction then drops to
+`SET LOCAL ROLE calendry_app` with tenant context before writing anything. That
+narrows the write PATH, not the credential. What it buys is that a **mismatched
+pair cannot be written**: `access_role.tenant_id` and
+`access_role_permission.tenant_id` must both equal the context, so a bug
+resolving the wrong tenant is refused by the database instead of quietly landing
+a role in it. Pinned by `tests/access-role-writability.test.ts`, whose negative
+cases are the point — a suite asserting only "the app role can write a role"
+passes just as well against a build with `tenant_isolation` dropped entirely.
+
+**There is deliberately no `--all`.** `provision:tenant` already mints a
+full-catalogue `tenant-admin`, so a second one is an unaudited second superuser
+role per tenant; more to the point, a role granted "everything" once silently
+stops being everything the next time a permission is added — the same drift
+`grant:permissions --all-missing` exists to repair. Compose it from two audited
+steps instead.
+
+Duplicates fail loudly and are never upserted (a second row that looks like the
+first is worse than an error — see the mislabelled constraint below), and a role
+whose *display name* collides with an existing one warns without blocking, since
+`name` is not unique but silence is how "Cap online share per group" came to
+label a `minimize_exam_week_sessions` row.
+
+Assignment stays with `create:account --role <key>`; granting a role to a person
+who already exists is still Step 14.
 
 ### Step 14: AccessRole management has no UI and no API
 
-Tenant roles are currently editable **only by `provision:tenant`** (which grants
-the whole catalogue to `tenant-admin` at creation) and by the Step 13 operator
-CLI `bun run grant:permissions` (which backfills grants onto an existing role).
-There is no way for a tenant admin to compose a role, and no route behind it:
+Tenant roles are editable **only by operator CLIs**: `provision:tenant` (grants
+the whole catalogue to `tenant-admin` at creation), `create:role` (composes a new
+role from an explicit permission list) and `grant:permissions` (backfills onto an
+existing role). A tenant admin still cannot compose a role, and no route is
+behind any of it:
 
 - `access_role.manage` and `person_access_role.assign` are in the permission
   catalogue and granted to `tenant-admin`, but **no endpoint checks either** —
@@ -1073,6 +1115,11 @@ The order matters, and each step depends on the one before it.
   visibly exists. Backfill with
   `bun run grant:permissions -- --role tenant-admin --all-missing`
   (`--dry-run` first; owner connection, audited to stdout like `reset:password`).
+- **A rebuilt dev database has one role and one account.** To restore the
+  under-privileged accounts the permission-gated checks need:
+  `bun run create:role -- --tenant test --key viewer --name "Schedule Viewer"
+  --permissions session.read,group.read,room.read,person.read,term.read,time_grid.read`,
+  then `create:account` twice against `--role viewer`.
 
 ### The helper schema is `calendry_internal`, never `calendry`
 
@@ -1178,9 +1225,10 @@ surprises. None of these block current work.
   `app/components/`. New work uses tokens (see Conventions); this is a
   standalone design-system pass whenever it is worth doing.
 
-- **Raw-SQL account artifacts in the `test` tenant — clean up before any
-  staging or production exposure.** Both were written directly to the database
-  during development, bypassing the paths that would normally create them:
+- ~~**Raw-SQL account artifacts in the `test` tenant.**~~ **BOTH RESOLVED.** Each
+  was originally written directly to the database, bypassing the paths that would
+  normally create them; each now exists only through an operator CLI. Kept here
+  because the reasoning is the record of why those CLIs exist at all:
 
   - ~~**`ntill@gmx.de`'s password was set by hand.**~~ **RESOLVED.** Replaced
     through the real path by `bun run reset:password`, which hashes via
@@ -1190,13 +1238,22 @@ surprises. None of these block current work.
     remains for this account. (The duplicate scrypt implementation that made
     this a risk is also gone: `provision-tenant.ts` now imports the same
     `hashPassword()` rather than carrying its own copy.)
-  - **`vic@demo.local`** is a hand-inserted Person + Account + `viewer`
-    AccessRole (7 read permissions) used to prove permission-gated affordances
-    in the schedule UI. Deliberately kept: it has real regression value. It is
-    demo-tenant only.
+  - ~~**`vic@demo.local`** is a hand-inserted Person + Account + `viewer`
+    AccessRole.~~ **RESOLVED.** Both it and `viewer6b@calendry.local` are now
+    created through `bun run create:role` + `bun run create:account`, with no raw
+    SQL anywhere in the path. Their passwords live in the gitignored `.env` as
+    `VIC_ACCOUNT_PASSWORD` / `VIEWER_ACCOUNT_PASSWORD`.
 
-  Both should be recreated through proper channels — provisioning and the
-  forced-reset CLI — once that CLI exists.
+    **The role holds SIX permissions, not the seven previously recorded here.**
+    The original raw SQL listed seven, but vic's live `GET /api/auth/session`
+    reported six, and `session.get.ts` applies no filtering — it returns
+    `loadPermissions()` verbatim — so one INSERT never landed. The measurement
+    overrides the written record. The set is:
+
+        group.read, person.read, room.read, session.read, term.read, time_grid.read
+
+    `violation.read` was intended and absent. Recreated as six deliberately,
+    because six is what the 6b/6c evidence was actually gathered against.
 
 - **Impeccable's state directory collides with its own install path.** The
   skill expects `.impeccable/` at the repo root to hold *per-project* state
