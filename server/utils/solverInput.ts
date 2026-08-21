@@ -176,7 +176,11 @@ export async function assembleSolverInput(
 
     const term = await tx.term.findFirst({
         where: { id: options.termId, tenantId: options.tenantId },
-        include: { timeGrid: true, calendarPeriods: true },
+        // `breaks` travels with the grid: computeReferenceSlot() resolves a
+        // block from the wall clock, and a day-specific break changes which
+        // block that is. The breaks themselves are NOT forwarded to the solver
+        // — see toWireTimeGrid().
+        include: { timeGrid: { include: { breaks: true } }, calendarPeriods: true },
     });
 
     if (!term) {
@@ -186,7 +190,10 @@ export async function assembleSolverInput(
     // A grid is not optional: every placement is addressed against it, and
     // TAXONOMY.md §2 forbids assuming a shape when one is missing.
     const grid = term.timeGrid
-        ?? await tx.timeGrid.findFirst({ where: { tenantId: options.tenantId, isDefault: true } });
+        ?? await tx.timeGrid.findFirst({
+            where: { tenantId: options.tenantId, isDefault: true },
+            include: { breaks: true },
+        });
 
     if (!grid) {
         throw createError({

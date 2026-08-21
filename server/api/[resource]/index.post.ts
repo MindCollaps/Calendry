@@ -1,5 +1,5 @@
 import { mapDbErrors } from '../../utils/dbErrors';
-import { delegate, demoteExclusiveSiblings, getResource } from '../../utils/resources';
+import { delegate, demoteExclusiveSiblings, getResource, splitChildren } from '../../utils/resources';
 import { crudPermission } from '../../utils/permissions';
 import { requirePermission } from '../../utils/requirePermission';
 import { withRequestTenant } from '../../utils/tenantDb';
@@ -20,7 +20,8 @@ export default defineEventHandler(async (event) => {
         // Federation-owned rows are deliberately NOT creatable here: TAXONOMY.md
         // §2 treats shared resources as a privileged path, and the RLS write
         // policy only permits tenant-owned writes.
-        const data = { ...(body as Record<string, unknown>), tenantId: identity.tenantId };
+        const { columns, children } = splitChildren(config, body as Record<string, unknown>);
+        const data = { ...columns, tenantId: identity.tenantId };
 
         const created = await mapDbErrors(async () => {
             // Creating a row that claims an exclusive flag demotes the incumbent,
@@ -28,7 +29,13 @@ export default defineEventHandler(async (event) => {
             // 409 telling the user to go and edit a different row first.
             await demoteExclusiveSiblings(tx, config, identity.tenantId, data);
 
-            return delegate(tx, config.model).create({ data });
+            const row = await delegate(tx, config.model).create({ data }) as { id: string };
+
+            if (config.writeChildren && Object.keys(children).length) {
+                await config.writeChildren({ tx, tenantId: identity.tenantId, id: row.id, children });
+            }
+
+            return row;
         });
 
         setResponseStatus(event, 201);

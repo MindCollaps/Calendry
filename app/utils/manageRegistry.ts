@@ -570,7 +570,12 @@ export const MANAGE_ENTITIES: ManageEntity[] = [
             { key: 'blocksPerDay', label: 'Blocks per day', type: 'number', required: true, min: 1, custom: true },
             { key: 'startHour', label: 'Start hour', type: 'number', min: 0, max: 23, custom: true },
             { key: 'startMinute', label: 'Start minute', type: 'number', min: 0, max: 59, custom: true },
-            { key: 'breakMinutes', label: 'Break between blocks (minutes)', type: 'number', min: 0, custom: true },
+            { key: 'breakMinutes', label: 'Default gap between blocks (minutes)', type: 'number', min: 0, custom: true },
+            // custom: true keeps it in the draft, dirty tracking and the payload
+            // while ManageTimeGridEditor supplies the control. Leaving it out of
+            // the registry instead would drop it from the draft and silently
+            // from saves — the trap Step 13 documented.
+            { key: 'breaks', label: 'Named breaks', type: 'text', custom: true },
             { key: 'activeDays', label: 'Teaching days', type: 'select', required: true, custom: true },
             { key: 'isDefault', label: 'Default grid', type: 'boolean', custom: true },
         ],

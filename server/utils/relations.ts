@@ -53,6 +53,34 @@ export interface RelationConfig {
 const id = z.string().min(1);
 
 export const RELATIONS: Record<string, RelationConfig> = {
+    /**
+     * Named, non-uniform break overrides on a TimeGrid.
+     *
+     * A PUT-set like every other collection here: the editor holds the whole
+     * list, and "add one, change one, remove one" is one request that either
+     * lands or does not. Per-row calls would let a form half-apply into a
+     * schedule nobody chose.
+     *
+     * Permission is the parent's `time_grid.update`, per the rule above:
+     * changing when a grid breaks IS editing the grid.
+     */
+    'time-grids/breaks': {
+        parent: 'time-grids',
+        parentModel: 'timeGrid',
+        model: 'timeGridBreak',
+        parentKey: 'timeGridId',
+        // `dayOfWeek: null` is universal; 1..7 is a specific ISO weekday. The
+        // database CHECK rejects 0 and 8 as well — a grid cannot have a break
+        // on a day no Session can occupy.
+        item: z.object({
+            afterBlockIndex: z.number().int().min(0),
+            durationMinutes: z.number().int().min(1),
+            label: z.string().min(1),
+            dayOfWeek: z.number().int().min(1).max(7).nullish(),
+        }),
+        select: { id: true, afterBlockIndex: true, durationMinutes: true, label: true, dayOfWeek: true },
+    },
+
     'offerings/groups': {
         parent: 'offerings',
         parentModel: 'offering',

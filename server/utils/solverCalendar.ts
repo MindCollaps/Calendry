@@ -280,9 +280,16 @@ export function computeReferenceSlot(options: {
 
     const week = Math.floor((mondayOf(local.date).getTime() - firstMonday.getTime()) / (7 * MS_PER_DAY));
 
+    const day = isoWeekday(local.date);
+
     return {
         week: Math.max(0, week),
-        day: isoWeekday(local.date),
-        block: blockOfMinute(grid, local.minutes),
+        day,
+        // The DAY is passed, not defaulted. A grid with a Friday-specific break
+        // resolves a different block for the same wall-clock minute, and this
+        // slot decides which Sessions the solver may move — computing it
+        // against the universal schedule would let a Friday afternoon class be
+        // rescheduled after it had already run.
+        block: blockOfMinute(grid, local.minutes, day),
     };
 }

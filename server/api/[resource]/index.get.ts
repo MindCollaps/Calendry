@@ -98,11 +98,12 @@ export default defineEventHandler(async (event) => {
 
         return mapDbErrors(async () => {
             if (paging.limit === undefined) {
-                return delegate(tx, config.model).findMany({ where, orderBy: config.orderBy });
+                return delegate(tx, config.model).findMany({ where, orderBy: config.orderBy, include: config.include });
             }
 
             const [rows, total] = await Promise.all([
                 delegate(tx, config.model).findMany({
+                    include: config.include,
                     where,
                     orderBy: config.orderBy,
                     take: paging.limit,

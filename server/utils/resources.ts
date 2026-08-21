@@ -58,6 +58,34 @@ export interface ResourceConfig {
      * governs, and the next one is a property rather than another branch in a
      * handler that serves eleven entities.
      */
+    /**
+     * Relations to embed on read. Kept minimal — an include is a join on every
+     * list request, so it earns its place only when the client genuinely cannot
+     * render the row without it.
+     *
+     * `time-grids` qualifies: break overrides change what every block is
+     * CALLED, so a grid without them renders a timetable that is wrong rather
+     * than merely sparse.
+     */
+    include?: Record<string, boolean>;
+    /**
+     * Body keys that are CHILD ROWS, not columns. Stripped from the row write
+     * and handed to `writeChildren` inside the same transaction.
+     *
+     * Deliberately NOT the RELATIONS mechanism, which is a picker over existing
+     * entities (`resource: 'groups'`, `valueKey: 'groupId'`) saved by its own
+     * request. A TimeGrid's breaks are not references to anything — they are
+     * part of the grid's own definition, and a grid whose blocks moved but
+     * whose lunch did not, because one of two requests failed, is a timetable
+     * nobody chose. So they save atomically with the row.
+     */
+    childKeys?: string[];
+    writeChildren?: (ctx: {
+        tx: Tx;
+        tenantId: string;
+        id: string;
+        children: Record<string, unknown[]>;
+    }) => Promise<void>;
     beforeUpdate?: (ctx: {
         tx: Tx;
         tenantId: string;
@@ -223,6 +251,31 @@ export const RESOURCES: Record<string, ResourceConfig> = {
         // (migration 20260814120000). The index is the guarantee; this is what
         // makes promoting a grid an ordinary action rather than a 409.
         exclusiveFlag: 'isDefault',
+        include: { breaks: true },
+        childKeys: ['breaks'],
+        async writeChildren({ tx, tenantId, id, children }) {
+            const rows = (children.breaks ?? []) as {
+                afterBlockIndex: number; durationMinutes: number; label: string; dayOfWeek?: number | null;
+            }[];
+
+            // Replaced wholesale, like every other set in this codebase: the
+            // submitted list is the authority, and diffing would be three code
+            // paths where this is one.
+            await tx.timeGridBreak.deleteMany({ where: { timeGridId: id, tenantId } });
+
+            if (rows.length) {
+                await tx.timeGridBreak.createMany({
+                    data: rows.map((b) => ({
+                        timeGridId: id,
+                        tenantId,
+                        afterBlockIndex: b.afterBlockIndex,
+                        durationMinutes: b.durationMinutes,
+                        label: b.label,
+                        dayOfWeek: b.dayOfWeek ?? null,
+                    })),
+                });
+            }
+        },
         create: z.object({
             name: z.string().min(1),
             blockLengthMinutes: z.number().int().min(1),
@@ -231,6 +284,12 @@ export const RESOURCES: Record<string, ResourceConfig> = {
             startHour: z.number().int().min(0).max(23).optional(),
             startMinute: z.number().int().min(0).max(59).optional(),
             breakMinutes: z.number().int().min(0).optional(),
+            breaks: z.array(z.object({
+                afterBlockIndex: z.number().int().min(0),
+                durationMinutes: z.number().int().min(1),
+                label: z.string().min(1),
+                dayOfWeek: z.number().int().min(1).max(7).nullish(),
+            })).optional(),
             isDefault: z.boolean().optional(),
         }),
         update: z.object({
@@ -241,6 +300,12 @@ export const RESOURCES: Record<string, ResourceConfig> = {
             startHour: z.number().int().min(0).max(23).optional(),
             startMinute: z.number().int().min(0).max(59).optional(),
             breakMinutes: z.number().int().min(0).optional(),
+            breaks: z.array(z.object({
+                afterBlockIndex: z.number().int().min(0),
+                durationMinutes: z.number().int().min(1),
+                label: z.string().min(1),
+                dayOfWeek: z.number().int().min(1).max(7).nullish(),
+            })).optional(),
             isDefault: z.boolean().optional(),
         }),
         filters: z.object({ isDefault: z.coerce.boolean().optional() }),
@@ -294,6 +359,45 @@ export const RESOURCES: Record<string, ResourceConfig> = {
                     statusMessage: describeOrphans(total, named),
                     data: { sessionIds: named.map((s) => s.id), total },
                 });
+            }
+
+            /**
+             * Break overrides that no longer name a real position are removed,
+             * not refused.
+             *
+             * The asymmetry with Sessions above is deliberate and is the whole
+             * distinction: an orphaned Session is DATA that resolves to no time
+             * and breaks the solver, so the edit is refused. An orphaned break
+             * is CONFIGURATION describing a gap between blocks that no longer
+             * exist — nothing references it, nothing renders it, and refusing
+             * the shrink over it would block a legitimate edit to protect a row
+             * whose meaning has already gone.
+             *
+             * Same transaction as the update, so a failed shrink deletes
+             * nothing. Reported rather than silent: this repo's rule is that a
+             * guard must not have a failure mode indistinguishable from doing
+             * nothing, and quietly discarding a tenant's named lunch would be
+             * exactly that.
+             */
+            const dangling = await tx.timeGridBreak.findMany({
+                where: {
+                    timeGridId: id,
+                    tenantId,
+                    OR: [
+                        { afterBlockIndex: { gte: next.blocksPerDay } },
+                        { dayOfWeek: { notIn: next.activeDays } },
+                    ],
+                },
+                select: { id: true, label: true, afterBlockIndex: true, dayOfWeek: true },
+            });
+
+            if (dangling.length) {
+                await tx.timeGridBreak.deleteMany({ where: { id: { in: dangling.map((b) => b.id) } } });
+
+                console.warn('[time-grid] dropped %d break override(s) left dangling by a shrink: %s',
+                    dangling.length,
+                    dangling.map((b) => `${b.label} (after block ${b.afterBlockIndex}`
+                        + `${b.dayOfWeek ? `, day ${b.dayOfWeek}` : ''})`).join('; '));
             }
         },
     },
@@ -420,6 +524,29 @@ export function getResource(name: string | undefined): ResourceConfig {
  * runtime string without losing all typing. The cast is contained here so the
  * rest of the codebase keeps its types.
  */
+/** Splits a validated body into column values and child-row collections. */
+export function splitChildren(
+    config: ResourceConfig,
+    body: Record<string, unknown>,
+): { columns: Record<string, unknown>; children: Record<string, unknown[]> } {
+    const childKeys = new Set(config.childKeys ?? []);
+    const columns: Record<string, unknown> = {};
+    const children: Record<string, unknown[]> = {};
+
+    // Partitioned by rebuilding rather than by deleting keys: a dynamic
+    // `delete` is both an eslint error here and a deoptimisation, and the
+    // rebuild states the intent — these are columns, those are child rows.
+    for (const [key, value] of Object.entries(body)) {
+        if (childKeys.has(key)) {
+            children[key] = (value as unknown[]) ?? [];
+        } else {
+            columns[key] = value;
+        }
+    }
+
+    return { columns, children };
+}
+
 export function delegate(tx: Tx, model: string) {
     const d = (tx as unknown as Record<string, unknown>)[model];
 

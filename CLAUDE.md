@@ -1191,6 +1191,64 @@ All three owner-connection consumers — the Prisma CLI, the seed, and
 `provision:tenant` — go through that selection. The runtime app role never does:
 it cannot write the catalogue (SELECT-only RLS policy) and cannot create tenants.
 
+## TimeGrid breaks: non-uniform, and one thing left open
+
+`time_grid.break_minutes` is the DEFAULT gap between consecutive blocks.
+`time_grid_break` adds sparse named overrides — `{afterBlockIndex, durationMinutes,
+label, dayOfWeek}` — where `dayOfWeek NULL` means every active day and a
+day-specific row beats it **at that position only**, so "same lunch every day,
+but Friday's afternoon break differs" is one extra row, not a duplicated day.
+
+**`shared/timeGrid.ts` is the single definition of when a block starts.** Both
+`blockTime()` (what a block is called) and `blockOfMinute()` (which block it is
+now) walk cumulative boundaries through it. They answer inverse questions about
+one timeline, and if they disagreed the schedule would render one time while
+`reference_slot` believed another — invisibly, until the solver refused to move a
+Session a user could see was still ahead. Do not reintroduce a local
+`blockLength + breakMinutes` stride anywhere; three had accumulated before this
+landed (the editor's preview, the diagnostic script, and the two helpers).
+
+**This is not only rendering.** `blockOfMinute()` feeds `computeReferenceSlot()`,
+which decides what the solver may move, and that function now passes the resolved
+DAY so a day-specific break is honoured. Computing it against the universal
+schedule would let a Friday afternoon class be rescheduled after it had run.
+
+**Nothing about breaks reaches the solver, and that is verified, not assumed.**
+The wire carries block INDICES; a gap's duration changes no index, no adjacency
+and no conflict. `toWireTimeGrid()` omits break data and has a test asserting the
+omission. Confirmed against the full feature: a run with two overrides configured
+returned SUCCEEDED and no break data appears anywhere in the request. Zero
+changes to `calendry-proto` or `calendry-solver`.
+
+**`fitsGrid()` deliberately does not consider breaks.** Its criterion is whether
+a field participates in the INDEX SPACE, which is exactly `blocksPerDay ×
+activeDays`. A break names an `afterBlockIndex` — it references that space
+without defining it — so adding a lunch creates, destroys and renumbers nothing.
+
+**Orphaned breaks are deleted and reported; orphaned Sessions refuse the edit.**
+The asymmetry is the design. A Session outside the grid is DATA that resolves to
+no time and breaks the solver. A break after a block that no longer exists is
+CONFIGURATION whose meaning has already gone — refusing a legitimate shrink to
+protect it would be worse. Both run in the same transaction, so a refused shrink
+deletes nothing, which is pinned by a test.
+
+### OPEN QUESTION — a Session whose duration spans a break
+
+**Not decided, deliberately.** A `durationBlocks: 2` Session placed across lunch
+currently renders as one contiguous span, and with a 45-minute gap inside it that
+is visibly wrong. Resolving it means deciding whether such a placement is legal
+at all:
+
+- if it is legal, the Session genuinely runs longer in wall-clock terms than
+  `durationBlocks × blockLengthMinutes`, and every duration display is wrong;
+- if it is not, that is a new hard constraint — and the SOLVER would need to know
+  about breaks to avoid producing one, which would overturn the "breaks never
+  cross the wire" decision this whole feature rests on.
+
+That second branch is why this is not a rendering tweak. It is a scheduling-
+semantics question with a cross-repo consequence, and it should be answered
+explicitly rather than settled by whichever behaviour someone implements first.
+
 ## Known issues / tech debt
 
 - **Three hand-written indexes are MISSING from the database.** The accidental

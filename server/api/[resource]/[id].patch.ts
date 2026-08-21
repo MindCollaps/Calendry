@@ -1,5 +1,5 @@
 import { mapDbErrors } from '../../utils/dbErrors';
-import { delegate, demoteExclusiveSiblings, getResource } from '../../utils/resources';
+import { delegate, demoteExclusiveSiblings, getResource, splitChildren } from '../../utils/resources';
 import { crudPermission } from '../../utils/permissions';
 import { requirePermission } from '../../utils/requirePermission';
 import { withRequestTenant } from '../../utils/tenantDb';
@@ -30,6 +30,8 @@ export default defineEventHandler(async (event) => {
             patch: body as Record<string, unknown>,
         });
 
+        const { columns, children } = splitChildren(config, body as Record<string, unknown>);
+
         const result = await mapDbErrors(async () => {
             // Same transaction as the update below, so the two-defaults state is
             // never observable and a failed update demotes nothing.
@@ -37,14 +39,22 @@ export default defineEventHandler(async (event) => {
                 tx,
                 config,
                 identity.tenantId,
-                body as Record<string, unknown>,
+                columns,
                 id,
             );
 
-            return delegate(tx, config.model).updateMany({
+            const updated = await delegate(tx, config.model).updateMany({
                 where: { id, tenantId: identity.tenantId },
-                data: body as Record<string, unknown>,
+                data: columns,
             });
+
+            // Same transaction: a grid whose blocks moved but whose breaks did
+            // not is a timetable nobody chose.
+            if (updated.count > 0 && config.writeChildren && Object.keys(children).length) {
+                await config.writeChildren({ tx, tenantId: identity.tenantId, id: id as string, children });
+            }
+
+            return updated;
         });
 
         if (result.count === 0) {

@@ -258,6 +258,7 @@ model Tenant {
   equipment            Equipment[]
   roomEquipment        RoomEquipment[]
   timeGrids            TimeGrid[]
+  timeGridBreaks       TimeGridBreak[]
   terms                Term[]
   calendarPeriods      CalendarPeriod[]
   sessionKinds         SessionKind[]
@@ -568,7 +569,9 @@ model TimeGrid {
   startHour   Int @default(8) @map("start_hour")
   startMinute Int @default(0) @map("start_minute")
 
-  /// Minutes between consecutive blocks.
+  /// DEFAULT minutes between consecutive blocks. Named overrides in
+  /// `TimeGridBreak` replace it at specific positions; this stays the gap
+  /// everywhere they do not.
   breakMinutes Int @default(0) @map("break_minutes")
 
   /// At most one per tenant, enforced by the partial unique index
@@ -584,10 +587,48 @@ model TimeGrid {
 
   terms    Term[]
   sessions Session[]
+  breaks   TimeGridBreak[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
   @@map("time_grid")
+}
+
+/// A named, non-uniform gap on a TimeGrid — lunch, an afternoon break.
+///
+/// Sparse: a grid with none behaves exactly as it did when `breakMinutes` was
+/// the whole story. The unique index on (grid, position, day) is what makes
+/// "one override per slot" a database guarantee rather than application care,
+/// and is the main reason this is a table and not a JSON column.
+///
+/// Never reaches the solver: the wire carries block INDICES, and a gap's
+/// duration changes no index, no adjacency and no conflict.
+model TimeGridBreak {
+  id         String @id @default(uuid(7))
+  tenantId   String @map("tenant_id")
+  timeGridId String @map("time_grid_id")
+
+  /// The gap FOLLOWS this 0-based block index. A row naming the final block is
+  /// inert — there is no later block for it to push.
+  afterBlockIndex Int @map("after_block_index")
+  durationMinutes Int @map("duration_minutes")
+  label           String
+
+  /// NULL = every active day, unless a day-specific row exists for the same
+  /// `afterBlockIndex`. Same null-means-universal shape as ConstraintScope.
+  dayOfWeek Int? @map("day_of_week")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  timeGrid TimeGrid @relation(fields: [timeGridId], references: [id], onDelete: Cascade)
+
+  /// NULLS NOT DISTINCT in SQL, which Prisma cannot express — see the migration.
+  @@unique([timeGridId, afterBlockIndex, dayOfWeek])
+  @@index([tenantId])
+  @@index([timeGridId])
+  @@map("time_grid_break")
 }
 
 /// Academic term / semester. Core from day one — constraints like "minimize

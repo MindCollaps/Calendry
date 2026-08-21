@@ -27,7 +27,7 @@ export default defineEventHandler(async (event) => {
             where.tenantId = identity.tenantId;
         }
 
-        const row = await mapDbErrors(() => delegate(tx, config.model).findFirst({ where }));
+        const row = await mapDbErrors(() => delegate(tx, config.model).findFirst({ where, include: config.include }));
 
         if (!row) {
             throw createError({ statusCode: 404, statusMessage: 'Not found.' });
