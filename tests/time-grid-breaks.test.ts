@@ -33,6 +33,9 @@ const FRI_PM: TimeGridBreak = { afterBlockIndex: 6, durationMinutes: 30, label: 
 
 const NON_UNIFORM: BlockGrid = { ...UNIFORM, breaks: [LUNCH, FRI_PM] };
 
+/** The days a grid shaped like UNIFORM would actually teach. */
+const UNIFORM_ACTIVE_DAYS = [1, 2, 3, 4, 5];
+
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
 describe('the uniform case is unchanged — the property the rewrite rests on', () => {
@@ -161,6 +164,33 @@ describe('non-uniform breaks', () => {
         };
 
         expect(blockBoundaries(grid)).toEqual(blockBoundaries(UNIFORM));
+    });
+
+    it('ignores an override for a day the grid does not teach', () => {
+        // The third dimension an override can dangle in. Position and final-block
+        // cases are above; this is the DAY one.
+        //
+        // It matters because the editor bounds its day picker to the grid's
+        // active days, so such a row can only arrive by a grid narrowing its
+        // days afterwards — and the shrink cascade that deletes those rows is
+        // API-level. Between the narrowing and the next save, the walk has to be
+        // right on its own.
+        const grid: BlockGrid = {
+            ...UNIFORM,
+            breaks: [{ afterBlockIndex: 2, durationMinutes: 90, label: 'Saturday only', dayOfWeek: 6 }],
+        };
+        const noBreaks: BlockGrid = { ...UNIFORM, breaks: [] };
+
+        // Every TAUGHT day is untouched — including at the override's own
+        // position, which is the assertion that would fail if the day were
+        // ignored and the row treated as universal.
+        for (const day of UNIFORM_ACTIVE_DAYS) {
+            expect(gapAfter(grid, 2, day), `day ${day}`).toBe(UNIFORM.breakMinutes);
+            expect(blockBoundaries(grid, day), `day ${day}`).toEqual(blockBoundaries(noBreaks, day));
+        }
+
+        // And "no particular day" does not see it either.
+        expect(gapAfter(grid, 2, null)).toBe(UNIFORM.breakMinutes);
     });
 
     it('never adds a gap after the final block', () => {

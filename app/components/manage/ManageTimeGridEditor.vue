@@ -348,14 +348,20 @@ function writeBreaks(next: TimeGridBreak[]) {
 }
 
 function addBreak() {
-    // Defaults to the middle of the day and "all days" — the lunch case, which
-    // is what someone reaching for this button almost always wants.
+    // Position defaults to the middle of the day and "all days" — the lunch
+    // case, which is what someone reaching for this button usually wants.
     const middle = Math.max(0, Math.floor(Number(draft.value.blocksPerDay ?? 2) / 2) - 1);
 
     writeBreaks([...breaks.value, {
         afterBlockIndex: blockChoices.value.includes(middle) ? middle : (blockChoices.value[0] ?? 0),
         durationMinutes: 45,
-        label: 'Lunch',
+        // Deliberately NOT 'Lunch'. A default that is usually right gets left in
+        // place; a default that names one specific break gets left in place too,
+        // and then it is wrong. The demo tenant ended up with two breaks both
+        // labelled "Lunch" — a 10:00 morning break and a 13:00 lunch — because
+        // the second one kept this default. A neutral word is one nobody
+        // mistakes for a considered answer.
+        label: 'Break',
         dayOfWeek: null,
     }]);
 }
