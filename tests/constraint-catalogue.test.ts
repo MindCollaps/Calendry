@@ -121,6 +121,68 @@ describe('constraint → wire mapping (Stage 3d)', () => {
         expect((result as { config: Record<string, unknown> }).config.minimizeDayUsage).toEqual({ days: [3, 7] });
     });
 
+    it('converts 1-based block positions to the wire\'s 0-based indices', () => {
+        // The UI counts blocks from 1 because that is how a human reads a day;
+        // the wire and the solver are 0-based. Converting at the boundary is the
+        // same discipline as `percent`, and getting it wrong shifts every
+        // penalised block by one — a rule that avoids the wrong lesson.
+        const result = toWireConstraint(
+            row({
+                type: 'minimize_block_usage',
+                severity: 'SOFT',
+                weight: 3,
+                params: { blocks: '4, 1', first: false, last: true },
+            }),
+            noKinds,
+        );
+
+        expect((result as { config: Record<string, unknown> }).config.minimizeBlockUsage)
+            .toEqual({ blocks: [0, 3], first: false, last: true });
+    });
+
+    it('drops unparseable and out-of-range block positions rather than failing the run', () => {
+        // Free text, so a stray character is expected input. A position below 1
+        // cannot be converted to a 0-based index at all; a high one is already
+        // inert solver-side. Neither should cost the tenant a whole solve.
+        const result = toWireConstraint(
+            row({
+                type: 'minimize_block_usage',
+                severity: 'SOFT',
+                weight: 3,
+                params: { blocks: '2, banana, 0, -1, 9', first: false, last: false },
+            }),
+            noKinds,
+        );
+
+        expect((result as { config: Record<string, unknown> }).config.minimizeBlockUsage)
+            .toEqual({ blocks: [1, 8], first: false, last: false });
+    });
+
+    it('reproduces the two types it supersedes', () => {
+        // The supersession claim, asserted on this side too. `first: true` with
+        // no positions must be exactly what "avoid the first block" meant, or a
+        // tenant migrating between them gets a different timetable for what they
+        // were told is the same rule.
+        const asFirst = toWireConstraint(
+            row({ type: 'minimize_block_usage', severity: 'SOFT', weight: 1,
+                params: { blocks: '', first: true, last: false } }),
+            noKinds,
+        );
+
+        expect((asFirst as { config: Record<string, unknown> }).config.minimizeBlockUsage)
+            .toEqual({ blocks: [], first: true, last: false });
+
+        // And the deprecated types still convert, because rows configured before
+        // the replacement existed must keep working — `type` is createOnly, so
+        // they cannot be edited across.
+        const legacy = toWireConstraint(
+            row({ type: 'minimize_first_block', severity: 'SOFT', weight: 1, params: {} }),
+            noKinds,
+        );
+
+        expect((legacy as { config: Record<string, unknown> }).config.minimizeFirstBlock).toEqual({});
+    });
+
     it('converts a percent parameter to the wire ratio', () => {
         const result = toWireConstraint(
             row({

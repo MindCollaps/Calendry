@@ -160,6 +160,27 @@ function buildVariant(typeKey: string, params: Record<string, unknown>): Record<
         case 'minimize_high_ranking_rooms':
             return { rankThreshold: Number(params.rankThreshold) };
 
+        case 'minimize_block_usage':
+            return {
+                // Stored 1-based because that is how a human counts blocks in
+                // the UI; the wire and the solver are 0-based. Converted at the
+                // boundary, exactly like `percent` params, so neither side has
+                // to know about the other's convention.
+                //
+                // Non-numeric and out-of-range entries are dropped rather than
+                // rejected: the field is free text, and a stale position is
+                // already inert solver-side, so failing the whole run over one
+                // stray character would be the harsher answer to the same input.
+                blocks: String(params.blocks ?? '')
+                    .split(',')
+                    .map((part) => Number(part.trim()))
+                    .filter((n) => Number.isInteger(n) && n >= 1)
+                    .map((n) => n - 1)
+                    .sort((a, b) => a - b),
+                first: Boolean(params.first),
+                last: Boolean(params.last),
+            };
+
         default:
             return {};
     }

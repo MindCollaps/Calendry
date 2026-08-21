@@ -45,6 +45,7 @@ export const SOLVER_OWNED_CONSTRAINT_TYPES = [
     'max_online_ratio_per_group',
     'minimize_first_block',
     'minimize_last_block',
+    'minimize_block_usage',
     'minimize_specifc_day',
     'minimize_high_ranking_rooms',
     'minimize_exam_week_sessions',
@@ -109,7 +110,8 @@ export type WireConstraintField =
     | 'minimizeDayUsage'
     | 'minimizeRoomRank'
     | 'minimizeExamWeek'
-    | 'minimizeOnline';
+    | 'minimizeOnline'
+    | 'minimizeBlockUsage';
 
 export interface ConstraintTypeDef {
     key: string;
@@ -130,6 +132,17 @@ export interface ConstraintTypeDef {
      */
     severity: 'HARD' | 'SOFT' | null;
     params: ConstraintParamDef[];
+    /**
+     * Set when a newer type supersedes this one.
+     *
+     * The entry STAYS in the catalogue. Removing it would make every existing
+     * row of that type unrenderable, and `type` is `createOnly`, so a tenant
+     * could not edit their way to the replacement either — they would be left
+     * with a rule the UI cannot show and cannot fix. The builder hides these
+     * from the "add a rule" picker while continuing to render the ones already
+     * configured.
+     */
+    deprecatedBy?: string;
 }
 
 export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
@@ -244,6 +257,11 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
         evaluator: 'solver',
         severity: 'SOFT',
         params: [],
+        // Superseded by `minimize_block_usage`. Kept so tenants who already
+        // configured it keep working — a catalogue entry that disappears turns
+        // an existing row into an unrenderable one, and `type` is createOnly so
+        // it could not be edited to the replacement either.
+        deprecatedBy: 'minimize_block_usage',
     },
     {
         key: 'minimize_last_block',
@@ -253,6 +271,47 @@ export const CONSTRAINT_TYPES: ConstraintTypeDef[] = [
         evaluator: 'solver',
         severity: 'SOFT',
         params: [],
+        deprecatedBy: 'minimize_block_usage',
+    },
+    {
+        key: 'minimize_block_usage',
+        wireField: 'minimizeBlockUsage',
+        label: 'Avoid particular blocks',
+        description:
+            'Prefer not to schedule in the chosen blocks of the day. Replaces the separate '
+            + '"avoid the first block" and "avoid the last block" rules, doing for the block '
+            + 'axis what "avoid particular days" did for the day axis.',
+        evaluator: 'solver',
+        severity: 'SOFT',
+        params: [
+            {
+                key: 'blocks',
+                label: 'Block positions to avoid',
+                type: 'text',
+                required: false,
+                help: 'Comma-separated positions, counting the first block of the day as 1. '
+                    + 'A position past the end of the day is ignored rather than an error, '
+                    + 'so shrinking a grid never invalidates a rule.',
+            },
+            {
+                // First and last are FLAGS, not positions, and that is the whole
+                // reason this type has both. "Block 6" is absolute: extend the
+                // day from 6 blocks to 8 and it still means block 6, now
+                // mid-afternoon, though nobody edited the rule. "The last block"
+                // follows the grid. Offering only positions would silently lose
+                // an intent the two replaced rules could express.
+                key: 'first',
+                label: 'Also avoid the first block, whichever it is',
+                type: 'boolean',
+                required: false,
+            },
+            {
+                key: 'last',
+                label: 'Also avoid the last block, whichever it is',
+                type: 'boolean',
+                required: false,
+            },
+        ],
     },
     {
         key: 'minimize_specifc_day',
