@@ -316,10 +316,10 @@ otherwise" is not one.
 - [x] **Solver integration Stages 1–7 — COMPLETE.** Start a solve, never lose
       the result, review it, apply or discard it; person-level clash detection,
       Federation-shared Rooms with real cross-tenant occupancy, and
-      federation-shareable Sessions. One thing remains, recorded below: the
-      solver's own virtual-room capacity-1 bug, which is cross-repo and not
-      fixable here. (The AccessRole gap that blocked viewer-account regression
-      checks is closed — see `create:role`.)
+      federation-shareable Sessions. Both remaining cross-repo items are now
+      closed too: the solver's virtual-room capacity-1 bug is fixed in
+      `calendry-solver`, and the AccessRole gap that blocked viewer-account
+      regression checks is closed — see `create:role`.
 - [ ] Import (CSV/Excel)
 - [ ] Export (iCal/Google/Outlook)
 - [ ] Notifications (delivery; audience resolution already exists)
@@ -614,40 +614,42 @@ at current volumes, and not this repo's code to fix — but it is an unbounded
 growth path, and the same absence of persistence is why this app captures
 results eagerly (above) and treats NOT_FOUND as terminal.
 
-**This should also get a line in calendry-solver's own CLAUDE.md** whenever that
-repo is next touched; recording it only here means the repo that can fix it is
-the one repo that does not know.
+~~**This should also get a line in calendry-solver's own CLAUDE.md.**~~ **DONE**
+— recorded there (§2, "the run registry grows without bound") alongside the two
+consequences this app depends on, so the repo that can fix it now knows what
+changing it would break here.
 
-### Tracked gap (cross-repo): the solver treats a VIRTUAL room as capacity-1
+### RESOLVED (cross-repo): the solver treated a VIRTUAL room as capacity-1
 
-Confirmed by reading `calendry-solver`'s source, not inferred. This app now
-exempts virtual rooms from `no_double_booking_room`; the solver does not, and its
-half is the damaging one because it constrains the SEARCH, not just the report.
+Both halves are now exempt, and the two sides agree. Fixed in `calendry-solver`
+at `99b41e3`; `vendor/calendry-solver` points at it.
 
-Two places need the same exemption, and they must move together or the solver
-will refuse placements it then declines to report:
+`Occupancy` (`solution.rs`) held a binary `BitMatrix` over (rooms × slots) with
+no capacity dimension, and `check_pair`'s `RoomDoubleBooking` branch reported on
+`rx == ry` — neither consulting `is_virtual`. The solver's half was the damaging
+one because it constrained the SEARCH: one online Session per slot, tenant-wide,
+during construction and LNS both.
 
-- **`crates/core/src/solution.rs` — `Occupancy`.** `room` is a `BitMatrix` over
-  (rooms × slots): binary, with no capacity dimension. `is_free()` returns false
-  the moment the room bit is set, with no `is_virtual` check. So during the
-  constructive phase AND local search, **one session per slot per virtual room,
-  tenant-wide** — an artificial cap on all online delivery.
-- **`crates/core/src/constraints.rs` — the `RoomDoubleBooking` branch.** Reports
-  whenever `rx == ry`, again with no `is_virtual` check.
+The fix keys on the FLAG, via a single `Room::is_exclusive()` predicate that both
+layers consult, so the search cannot refuse a placement it then declines to
+report. `capacity` still gates eligibility and was deliberately left alone — a
+virtual room with a genuine concurrency limit still cannot be expressed, and
+needs an explicit `concurrentCapacity` rather than an overload of `capacity`.
 
-That this is a bug rather than a stance: the solver already knows the flag and
-uses it elsewhere — `soft.rs` (`MinimizeOnline`), `convert.rs`
-(`if r.is_virtual && !o.allow_online`), `solution.rs`. And the proto says the
-intent outright: *"Online delivery is modeled as a virtual Room rather than a
-boolean flag on the Session, so room-assignment logic stays uniform."* Uniform
-room handling is the design; the occupancy exemption was simply never added.
+**It exposed a real gap in the solver, which is now tracked there rather than
+here.** The bug had been enforcing `MaxOnlineShare` by accident: virtual rooms
+are the overflow valve when physical rooms are full, and capacity-1 held that
+valve nearly shut. Removing it more than doubled share violations at
+large-university (180 → 455) with structural violations unchanged at exactly 80
+and `unplaced` still 0 — so the model is now correct and the search is visibly
+worse at respecting a cap it was never actually respecting on its own. That is
+solver-side work; nothing in this app changes because of it.
 
-**Not fixed from this repo** — same treatment as the PersonDoubleBooking gap
-below. Note when it is fixed: key on the `is_virtual` FLAG, never on a
-well-known "online" room, because nothing restricts a tenant to one virtual room.
-A virtual room with a genuine concurrency limit (a single meeting licence) cannot
-be expressed today at all — `capacity` means seats — and would need an explicit
-`concurrentCapacity`, not an overload of `capacity`.
+What this app should expect in the meantime: a SUCCEEDED run may carry more
+`MaxOnlineShare` violations than it used to. That is warn-and-allow behaving as
+designed — they arrive in `SolverOutput.hard_violations` like any other residual
+— but a run against a tenant with heavy online delivery will look noisier than
+the Stage 5 measurements recorded above.
 
 ### Tracked gap: the manual-edit evaluator misses person clashes across groups
 
