@@ -21,6 +21,15 @@ export default defineEventHandler(async (event) => {
         //
         // Reparenting a Group is permitted here; group_closure is rebuilt by the
         // database trigger from Step 3. This route must not touch it.
+        // Entity-specific refusal, inside the same transaction, before
+        // anything is written. Throwing here leaves the row untouched.
+        await config.beforeUpdate?.({
+            tx,
+            tenantId: identity.tenantId,
+            id: id as string,
+            patch: body as Record<string, unknown>,
+        });
+
         const result = await mapDbErrors(async () => {
             // Same transaction as the update below, so the two-defaults state is
             // never observable and a failed update demotes nothing.

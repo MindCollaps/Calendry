@@ -7,6 +7,7 @@ import type { SolverUnavailableError } from './solverClient';
 import {
     fromWireU64,
     getStatus,
+    grpcCode,
     isTerminal,
     toRunStatus,
 } from './solverClient';
@@ -65,7 +66,13 @@ export type PollFailure = 'forgotten' | 'unreachable';
 const GRPC_NOT_FOUND = 5;
 
 export function classifyPollFailure(error: unknown): PollFailure {
-    const code = (error as { cause?: { code?: number } })?.cause?.code;
+    // The SAME extractor `call()` uses to decide transport-vs-solver, rather
+    // than a second copy of `?.cause?.code` here. NOT_FOUND is a solver ANSWER,
+    // so it now arrives as SolverRejectedError; reading the code through the
+    // shared helper is what makes that reclassification invisible to this
+    // function instead of silently turning every forgotten run into a transient
+    // one.
+    const code = grpcCode(error);
 
     if (code === GRPC_NOT_FOUND) {
         return 'forgotten';

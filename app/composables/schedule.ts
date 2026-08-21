@@ -38,7 +38,7 @@ export interface ScheduleSession {
     durationBlocks: number;
     isLocked: boolean;
     groups: { groupId: string }[];
-    people: { personId: string; roleId: string | null }[];
+    people: { personId: string; roleId: string | null; role: { key: string } | null }[];
     rooms: { roomId: string }[];
     offering: { id: string; title: string; code: string | null } | null;
     kind: { id: string; key: string; name: string; color: string | null } | null;

@@ -3,7 +3,14 @@ import { LockPolicy } from '@mindcollaps/calendry-proto';
 import { findPgCodeIsUniqueViolation } from '../../../utils/dbErrors';
 import { requirePermission } from '../../../utils/requirePermission';
 import { withRequestTenant } from '../../../utils/tenantDb';
-import { ACTIVE_RUN_STATUSES, fromWireU64, serializeRun, startRun, toWireU64 } from '../../../utils/solverClient';
+import {
+    ACTIVE_RUN_STATUSES,
+    SolverRejectedError,
+    fromWireU64,
+    serializeRun,
+    startRun,
+    toWireU64,
+} from '../../../utils/solverClient';
 import { TermEndedError, assembleSolverInput } from '../../../utils/solverInput';
 
 /**
@@ -224,6 +231,26 @@ export default defineEventHandler(async (event) => {
                 finishedAt: new Date(),
             },
         }));
+
+        /**
+         * A solver that ANSWERS — even to reject the input — is reachable, and
+         * saying "could not reach" sends the reader to check containers and
+         * ports instead of the thing the solver actually told them. This cost a
+         * real troubleshooting session: an INVALID_ARGUMENT naming the exact
+         * Session and slot that no longer existed in the tenant's grid was
+         * reported as a network fault.
+         *
+         * 422, not 502: the request was delivered and understood, and the
+         * problem is the tenant's data. The solver's own message is the payload,
+         * because this app cannot say it better.
+         */
+        if (error instanceof SolverRejectedError) {
+            throw createError({
+                statusCode: 422,
+                statusMessage: `The solver rejected this run: ${error.message}`,
+                data: { runId: created.id, grpcCode: error.code, detail: error.message },
+            });
+        }
 
         throw createError({
             statusCode: 502,

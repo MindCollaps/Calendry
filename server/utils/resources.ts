@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Tx } from './tenantDb';
+import { describeOrphans, sessionsOutsideGrid } from './gridBounds';
 
 /**
  * Registry driving generic CRUD for the nine tenant-scoped core entities.
@@ -48,6 +49,21 @@ export interface ResourceConfig {
      * `tenant_id = x` or shared resources vanish.
      */
     federationOwnable?: boolean;
+    /**
+     * Runs inside the update transaction, BEFORE the row is written. Throw to
+     * refuse the edit.
+     *
+     * Declared here rather than special-cased in the generic PATCH route for the
+     * same reason `exclusiveFlag` is: the rule stays next to the entity it
+     * governs, and the next one is a property rather than another branch in a
+     * handler that serves eleven entities.
+     */
+    beforeUpdate?: (ctx: {
+        tx: Tx;
+        tenantId: string;
+        id: string;
+        patch: Record<string, unknown>;
+    }) => Promise<void>;
 }
 
 const id = z.string().min(1);
@@ -230,6 +246,56 @@ export const RESOURCES: Record<string, ResourceConfig> = {
         filters: z.object({ isDefault: z.coerce.boolean().optional() }),
         orderBy: { name: 'asc' },
         searchFields: ['name'],
+        /**
+         * Narrowing a grid must not orphan Sessions that already sit in it.
+         *
+         * Only `blocksPerDay` and `activeDays` define the index space, so only
+         * those two are checked — see `fitsGrid`. Widening is always safe, and
+         * so is renaming or re-timing, which is why the effective bounds below
+         * are computed by MERGING the patch over the stored row rather than
+         * running whenever either key merely appears.
+         */
+        async beforeUpdate({ tx, tenantId, id, patch }) {
+            const touchesIndexSpace = 'blocksPerDay' in patch || 'activeDays' in patch;
+
+            if (!touchesIndexSpace) {
+                return;
+            }
+
+            const current = await tx.timeGrid.findFirst({
+                where: { id, tenantId },
+                select: { blocksPerDay: true, activeDays: true },
+            });
+
+            if (!current) {
+                // Missing or another tenant's. The update itself reports that;
+                // refusing here would turn a 404 into a confusing 409.
+                return;
+            }
+
+            const next = {
+                blocksPerDay: (patch.blocksPerDay as number | undefined) ?? current.blocksPerDay,
+                activeDays: (patch.activeDays as number[] | undefined) ?? current.activeDays,
+            };
+
+            // A pure widening cannot orphan anything, so it skips the query.
+            const widensOnly = next.blocksPerDay >= current.blocksPerDay
+                && current.activeDays.every((d) => next.activeDays.includes(d));
+
+            if (widensOnly) {
+                return;
+            }
+
+            const { total, named } = await sessionsOutsideGrid(tx, id, next);
+
+            if (total > 0) {
+                throw createError({
+                    statusCode: 409,
+                    statusMessage: describeOrphans(total, named),
+                    data: { sessionIds: named.map((s) => s.id), total },
+                });
+            }
+        },
     },
 
     terms: {

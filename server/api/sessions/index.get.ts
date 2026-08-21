@@ -67,7 +67,19 @@ export default defineEventHandler(async (event) => {
             orderBy: [{ termWeek: 'asc' }, { dayOfWeek: 'asc' }, { blockIndex: 'asc' }],
             include: {
                 groups: { select: { groupId: true } },
-                people: { select: { personId: true, roleId: true } },
+                // The role KEY travels with the session, not just its id.
+                // `Lecturer` is the one fixed role name (TAXONOMY.md §2), and
+                // splitting lecturers out of the attendee list needs to know
+                // which assignment is which.
+                //
+                // Sent from HERE rather than fetched by the client from
+                // /api/roles, which needs `role.read` — a permission the
+                // `viewer` role does not hold. A reference fetch the page's own
+                // gate does not cover is what blanked the 6c review screen: one
+                // 403 inside a Promise.all rejects the whole handler.
+                people: {
+                    select: { personId: true, roleId: true, role: { select: { key: true } } },
+                },
                 rooms: { select: { roomId: true } },
                 // A Session's own columns carry no human-readable label, so a
                 // client would otherwise need a second round trip per view just

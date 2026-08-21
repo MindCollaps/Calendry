@@ -79,13 +79,29 @@
                         >The solver places a session in one room — the extras are kept here but not sent to it.</p>
                     </dd>
                 </div>
-                <div v-if="session.people.length">
-                    <dt>People</dt>
-                    <dd>{{ session.people.map(p => lookup.person(p.personId)).join(', ') }}</dd>
+                <div v-if="lecturers.length">
+                    <dt>{{ lecturers.length === 1 ? 'Lecturer' : 'Lecturers' }}</dt>
+                    <dd>{{ lecturers.map(p => lookup.person(p.personId)).join(', ') }}</dd>
+                </div>
+                <div v-if="attendees.length">
+                    <dt>{{ attendees.length === 1 ? 'Person' : 'People' }}</dt>
+                    <dd>{{ attendees.map(p => lookup.person(p.personId)).join(', ') }}</dd>
                 </div>
                 <div v-if="session.groups.length">
                     <dt>{{ session.groups.length === 1 ? 'Group' : 'Groups' }}</dt>
-                    <dd>{{ session.groups.map(g => lookup.group(g.groupId)).join(', ') }}</dd>
+                    <dd>
+                        <!-- One level of ancestry, muted: "Seminar A1" alone is
+                             ambiguous across cohorts, and the nesting is what
+                             explains why a clash propagates. -->
+                        <span
+                            v-for="(g, i) in session.groups"
+                            :key="g.groupId"
+                        >{{ i ? ', ' : '' }}{{ lookup.group(g.groupId)
+                        }}<span
+                            v-if="lookup.groupParent(g.groupId)"
+                            class="inspector_muted"
+                        > · under {{ lookup.groupParent(g.groupId) }}</span></span>
+                    </dd>
                 </div>
             </dl>
 
@@ -175,7 +191,13 @@ const props = defineProps<{
     busy: boolean;
     /** Every room the tenant has, for the picker. */
     rooms: { id: string; name: string }[];
-    lookup: { room: (id: string) => string; person: (id: string) => string; group: (id: string) => string };
+    lookup: {
+        room: (id: string) => string;
+        person: (id: string) => string;
+        group: (id: string) => string;
+        /** Immediate parent's name, or null for a root group. */
+        groupParent: (id: string) => string | null;
+    };
 }>();
 
 const emit = defineEmits<{
@@ -205,6 +227,19 @@ const endBlock = computed(() => (props.session
     : 0));
 
 const worst = computed(() => (props.violations.some((v) => v.severity === 'HARD') ? 'hard' : 'soft'));
+
+/**
+ * `lecturer` is the ONE fixed Role key (TAXONOMY.md §2) — every other role name
+ * is tenant vocabulary and must never be assumed. Matching on the key is the
+ * same test `solverInput.ts` uses to build `lecturerIds`, so the panel and the
+ * solver agree about who is leading a Session.
+ */
+const lecturers = computed(() => (props.session?.people ?? [])
+    .filter((p) => p.role?.key === 'lecturer'));
+
+/** Everyone else directly assigned — students, auditors, whatever the tenant calls them. */
+const attendees = computed(() => (props.session?.people ?? [])
+    .filter((p) => p.role?.key !== 'lecturer'));
 </script>
 
 <style scoped lang="scss">

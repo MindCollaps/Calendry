@@ -61,17 +61,77 @@ export function getSolverClient(): SolverServiceClient {
 }
 
 /**
- * Every solver call is wrapped so a transport failure is distinguishable from a
- * solver-reported error.
+ * The gRPC status code carried by a solver failure, wrapped or raw.
  *
- * That distinction matters: "the solver said this run FAILED" is a normal
- * outcome to record, whereas "the solver is unreachable" means the run never
- * started and the row must not be left claiming otherwise.
+ * One extractor for both layers. `classifyPollFailure()` reads a WRAPPED error
+ * (it runs in a `catch` around `getStatus`), `call()` reads a RAW one, and a
+ * second copy of `?.cause?.code` in the other spelling is how the two drift
+ * apart. `undefined` means the failure carried no code at all — a dead channel,
+ * a DNS failure — which every caller must treat as transport.
+ */
+export function grpcCode(error: unknown): number | undefined {
+    const e = error as { code?: number; cause?: { code?: number } } | null | undefined;
+
+    return typeof e?.code === 'number' ? e.code : e?.cause?.code;
+}
+
+/** UNAVAILABLE. The channel never delivered the request. */
+const GRPC_UNAVAILABLE = 14;
+/** DEADLINE_EXCEEDED. We gave up before the solver answered. */
+const GRPC_DEADLINE_EXCEEDED = 4;
+
+/**
+ * True when the failure is the TRANSPORT, not the solver.
+ *
+ * Deliberately a small allowlist plus the no-code case, erring toward
+ * "transport" exactly as `classifyPollFailure()` errs toward `unreachable`:
+ * being wrong that way produces a retry, while being wrong the other way tells
+ * an operator to go and check a network that was never broken.
+ */
+export function isTransportFailure(error: unknown): boolean {
+    const code = grpcCode(error);
+
+    return code === undefined
+        || code === GRPC_UNAVAILABLE
+        || code === GRPC_DEADLINE_EXCEEDED;
+}
+
+/**
+ * The solver could not be reached. The call never got an answer.
+ *
+ * Only for genuine transport failures — see `isTransportFailure`. A solver that
+ * ANSWERS, even to reject the request, is reachable, and saying otherwise sends
+ * whoever reads it to inspect ports and containers instead of the thing the
+ * solver actually told them.
  */
 export class SolverUnavailableError extends Error {
     constructor(override readonly cause: unknown) {
         super(`Solver unreachable at ${solverAddress()}: ${(cause as Error)?.message ?? String(cause)}`);
         this.name = 'SolverUnavailableError';
+    }
+}
+
+/**
+ * The solver answered and refused the request.
+ *
+ * WHY THIS EXISTS. Every gRPC error used to become `SolverUnavailableError`,
+ * despite that class documenting the very distinction it was erasing. A real
+ * INVALID_ARGUMENT — *"session '…-session-3-1' sits at week 0 day 1 block 4,
+ * which is not a slot in this tenant's grid"*, precise enough to fix the data
+ * from — reached the operator as "Could not reach the solver service", and cost
+ * a troubleshooting session spent on container networking that was fine
+ * throughout.
+ *
+ * The solver's own message is preserved verbatim: it is the most useful thing
+ * in the failure, and this app cannot improve on it.
+ */
+export class SolverRejectedError extends Error {
+    readonly code: number | undefined;
+
+    constructor(override readonly cause: unknown) {
+        super((cause as Error)?.message ?? String(cause));
+        this.name = 'SolverRejectedError';
+        this.code = grpcCode(cause);
     }
 }
 
@@ -83,7 +143,13 @@ function call<TReq, TRes>(
     return new Promise((resolve, reject) => {
         method.call(target, request, (error: unknown, response: TRes) => {
             if (error) {
-                reject(new SolverUnavailableError(error));
+                // Both set `cause` to the raw gRPC error, which is what keeps
+                // `classifyPollFailure()` working: it needs the NOT_FOUND code
+                // to survive, and NOT_FOUND is a solver answer, so it now
+                // arrives wrapped as a rejection rather than as unavailability.
+                reject(isTransportFailure(error)
+                    ? new SolverUnavailableError(error)
+                    : new SolverRejectedError(error));
 
                 return;
             }

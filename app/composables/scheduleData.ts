@@ -1,5 +1,5 @@
 import type { ComputedRef, Ref } from 'vue';
-import type { NamedRow, ScheduleSession, Term, TimeGrid, Violation } from '~/composables/schedule';
+import type { ScheduleSession, Term, TimeGrid, Violation } from '~/composables/schedule';
 import { isOnGrid, weeksInTerm } from '~/composables/schedule';
 import { useHasPermission } from '~/composables/session';
 
@@ -43,7 +43,7 @@ export function useScheduleData(filters: {
         const [terms, timeGrids, groupRows, roomRows, personRows] = await Promise.all([
             request<Term[]>('/api/terms'),
             request<TimeGrid[]>('/api/time-grids'),
-            request<{ id: string; name: string }[]>('/api/groups'),
+            request<{ id: string; name: string; parentGroupId: string | null }[]>('/api/groups'),
             request<{ id: string; name: string; code: string }[]>('/api/rooms'),
             request<{ id: string; givenName: string; familyName: string }[]>('/api/persons'),
         ]);
@@ -64,7 +64,7 @@ export function useScheduleData(filters: {
         return {
             terms,
             timeGrids,
-            groups: groupRows as NamedRow[],
+            groups: groupRows,
             rooms: roomRows.map((r) => ({ id: r.id, name: `${r.code} · ${r.name}` })),
             people: personRows.map((p) => ({ id: p.id, name: `${p.givenName} ${p.familyName}` })),
             sessions,
@@ -168,6 +168,27 @@ export function useScheduleData(filters: {
         room: (id: string) => rooms.value.find((r) => r.id === id)?.name ?? id,
         person: (id: string) => people.value.find((p) => p.id === id)?.name ?? id,
         group: (id: string) => groups.value.find((g) => g.id === id)?.name ?? id,
+        /**
+         * The group's PARENT name, or null for a root.
+         *
+         * Group names repeat across a hierarchy — "Seminar A1" means little
+         * without "under Class A" — and the nesting is load-bearing rather than
+         * decorative: a Session on a cohort blocks every class beneath it, so
+         * knowing where a group sits explains why a clash appears somewhere the
+         * name alone would not suggest.
+         *
+         * ONE level only. The full ancestry is available but reads as noise in a
+         * side panel, and the immediate parent is what disambiguates.
+         *
+         * `parentGroupId` already arrives in the /api/groups payload — the type
+         * annotation was simply narrowing it away — so this costs no extra
+         * request and no permission the page does not already hold.
+         */
+        groupParent: (id: string): string | null => {
+            const parentId = groups.value.find((g) => g.id === id)?.parentGroupId;
+
+            return parentId ? groups.value.find((g) => g.id === parentId)?.name ?? null : null;
+        },
     };
 
     function sessionTitle(id: string): string {

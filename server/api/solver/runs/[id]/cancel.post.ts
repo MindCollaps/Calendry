@@ -1,6 +1,7 @@
 import { requirePermission } from '../../../../utils/requirePermission';
 import { withRequestTenant } from '../../../../utils/tenantDb';
 import {
+    SolverRejectedError,
     SolverUnavailableError,
     cancelRun,
     isTerminal,
@@ -74,6 +75,16 @@ export default defineEventHandler(async (event) => {
                 statusCode: 502,
                 statusMessage: 'Could not reach the solver service to cancel the run.',
                 data: { detail: error.message },
+            });
+        }
+
+        // The solver answered and refused. Its message says why; passing it
+        // through unchanged is the whole point of the two error classes.
+        if (error instanceof SolverRejectedError) {
+            throw createError({
+                statusCode: 422,
+                statusMessage: `The solver refused to cancel this run: ${error.message}`,
+                data: { grpcCode: error.code, detail: error.message },
             });
         }
 

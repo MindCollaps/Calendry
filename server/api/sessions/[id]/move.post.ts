@@ -4,6 +4,7 @@ import { appendEvent, placementOf, requireBaselineGeneration } from '../../../ut
 import { requirePermission } from '../../../utils/requirePermission';
 import { withRequestTenant } from '../../../utils/tenantDb';
 import { refreshViolations } from '../../../utils/violations';
+import { fitsGrid } from '../../../utils/gridBounds';
 
 const bodySchema = z.object({
     termId: z.string().min(1).optional(),
@@ -35,6 +36,38 @@ export default defineEventHandler(async (event) => {
 
         if (!session) {
             throw createError({ statusCode: 404, statusMessage: 'Not found.' });
+        }
+
+        /**
+         * The other half of the grid guard. Narrowing a TimeGrid under a Session
+         * and moving a Session outside its grid are the same defect, and the
+         * zod schema cannot catch this one: `blockIndex` has no upper bound it
+         * could know, and `dayOfWeek` is 1..7 regardless of which days the
+         * tenant actually teaches.
+         *
+         * Refused rather than warned, for the reason in `gridBounds.ts`: this is
+         * not a constraint violation on a placement, it is a placement that
+         * resolves to no slot at all.
+         */
+        const target = {
+            dayOfWeek: body.dayOfWeek ?? session.dayOfWeek,
+            blockIndex: body.blockIndex ?? session.blockIndex,
+            durationBlocks: body.durationBlocks ?? session.durationBlocks,
+        };
+        const grid = await tx.timeGrid.findFirst({
+            where: { id: session.timeGridId, tenantId: identity.tenantId },
+            select: { name: true, blocksPerDay: true, activeDays: true },
+        });
+
+        if (grid && !fitsGrid(target, grid)) {
+            throw createError({
+                statusCode: 409,
+                statusMessage: `Day ${target.dayOfWeek} block ${target.blockIndex}`
+                    + `${target.durationBlocks > 1 ? ` (${target.durationBlocks} blocks)` : ''}`
+                    + ` is not a slot in '${grid.name}', which has ${grid.blocksPerDay} blocks`
+                    + ` on days ${grid.activeDays.join(', ')}.`,
+                data: { ...target, blocksPerDay: grid.blocksPerDay, activeDays: grid.activeDays },
+            });
         }
 
         const generationId = await requireBaselineGeneration(tx, identity.tenantId, session.generationId);
