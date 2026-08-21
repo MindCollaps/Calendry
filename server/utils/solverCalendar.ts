@@ -1,4 +1,6 @@
 import type { AcademicCalendar, SlotRef, TimeGrid as WireTimeGrid } from '@mindcollaps/calendry-proto';
+import type { BlockGrid } from '../../shared/timeGrid';
+import { blockAtMinute } from '../../shared/timeGrid';
 
 /**
  * Stage 3a — the grid and the academic calendar, and the one genuinely hard
@@ -52,13 +54,8 @@ function covers(outerStart: Date, outerEnd: Date, innerStart: Date, innerEnd: Da
 // TimeGrid
 // ---------------------------------------------------------------------------
 
-export interface AppTimeGrid {
-    blocksPerDay: number;
-    blockLengthMinutes: number;
+export interface AppTimeGrid extends BlockGrid {
     activeDays: number[];
-    startHour: number;
-    startMinute: number;
-    breakMinutes: number;
 }
 
 export function toWireTimeGrid(grid: AppTimeGrid, institutionTimezone: string): WireTimeGrid {
@@ -85,22 +82,21 @@ export function toWireTimeGrid(grid: AppTimeGrid, institutionTimezone: string): 
  * This is the one calculation that MUST include breaks: it converts a wall-clock
  * instant into a grid index, and a 15-minute gap between blocks really does
  * shift when block 3 starts.
+ *
+ * Delegates to the shared walk, which `blockTime()` also uses. The two answer
+ * inverse questions about one timeline and must never disagree — see
+ * `shared/timeGrid.ts`.
+ *
+ * `dayOfWeek` is optional and defaults to "no particular day", which sees only
+ * universal break overrides. Callers that know the day should pass it, because
+ * a day-specific override changes the answer.
  */
-export function blockOfMinute(grid: AppTimeGrid, minutesSinceMidnight: number): number {
-    const dayStart = grid.startHour * 60 + grid.startMinute;
-    const stride = grid.blockLengthMinutes + grid.breakMinutes;
-
-    if (minutesSinceMidnight < dayStart || stride <= 0) {
-        return 0;
-    }
-
-    const elapsed = minutesSinceMidnight - dayStart;
-    const index = Math.floor(elapsed / stride);
-
-    // Clamped to the day: a time after teaching ends means "the whole day is
-    // past", which the caller expresses as blocksPerDay rather than an index
-    // that does not exist.
-    return Math.min(index, grid.blocksPerDay);
+export function blockOfMinute(
+    grid: AppTimeGrid,
+    minutesSinceMidnight: number,
+    dayOfWeek: number | null = null,
+): number {
+    return blockAtMinute(grid, minutesSinceMidnight, dayOfWeek);
 }
 
 // ---------------------------------------------------------------------------

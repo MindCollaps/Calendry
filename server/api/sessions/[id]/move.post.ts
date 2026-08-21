@@ -54,10 +54,17 @@ export default defineEventHandler(async (event) => {
             blockIndex: body.blockIndex ?? session.blockIndex,
             durationBlocks: body.durationBlocks ?? session.durationBlocks,
         };
-        const grid = await tx.timeGrid.findFirst({
-            where: { id: session.timeGridId, tenantId: identity.tenantId },
-            select: { name: true, blocksPerDay: true, activeDays: true },
-        });
+        // `timeGridId` is nullable, and passing null to a Prisma `id` filter is
+        // a type error that would only have degraded to "no guard at all" at
+        // runtime — the query matches nothing, `grid` is null, and the check is
+        // silently skipped. Exactly the failure shape this project keeps
+        // designing against, so the null case is named rather than filtered.
+        const grid = session.timeGridId
+            ? await tx.timeGrid.findFirst({
+                where: { id: session.timeGridId, tenantId: identity.tenantId },
+                select: { name: true, blocksPerDay: true, activeDays: true },
+            })
+            : null;
 
         if (grid && !fitsGrid(target, grid)) {
             throw createError({

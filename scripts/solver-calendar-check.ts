@@ -27,6 +27,7 @@ import {
     toWireTimeGrid,
 } from '../server/utils/solverCalendar';
 import { multiRoomSessionIds, toWireSession, toWireWeek } from '../server/utils/solverSessions';
+import { blockBoundaries } from '../shared/timeGrid';
 
 const WEEK_KIND_NAMES = ['UNSPECIFIED', 'TEACHING', 'EXAM', 'BREAK', 'HOLIDAY'];
 
@@ -103,10 +104,13 @@ try {
 
     // -- Block arithmetic ---------------------------------------------------
     heading('BLOCK ARITHMETIC (wall-clock minute → block index, breaks included)');
-    const stride = grid.blockLengthMinutes + grid.breakMinutes;
+    // The SHARED walk, not a local stride: a diagnostic that computed block
+    // times its own way could report a timetable the app never renders, which
+    // is the one thing this script exists not to do.
+    const bounds = blockBoundaries(grid);
 
     for (let block = 0; block < grid.blocksPerDay; block++) {
-        const start = grid.startHour * 60 + grid.startMinute + block * stride;
+        const start = bounds[block] as number;
         const end = start + grid.blockLengthMinutes;
         const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 

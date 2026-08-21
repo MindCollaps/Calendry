@@ -99,6 +99,7 @@ import type { TimeGrid } from '~/composables/schedule';
 import ManageEntityForm from '~/components/manage/ManageEntityForm.vue';
 import ManageField from '~/components/manage/ManageField.vue';
 import ManageWeekdayPicker from '~/components/manage/ManageWeekdayPicker.vue';
+import { blockBoundaries } from '#shared/timeGrid';
 import { blockTime, weekdayShort } from '~/composables/schedule';
 
 /**
@@ -184,11 +185,13 @@ const rollsPastMidnight = computed(() => {
         return false;
     }
 
-    const stride = grid.blockLengthMinutes + grid.breakMinutes;
-    const endMinutes = grid.startHour * 60 + grid.startMinute
-        + (previewBlocks.value.length - 1) * stride + grid.blockLengthMinutes;
+    // The shared walk's trailing entry IS when teaching ends, so this no longer
+    // re-derives it from a stride — which was the same arithmetic blockTime()
+    // owns, written a second time, in the one component whose whole purpose is
+    // to show the two agreeing.
+    const bounds = blockBoundaries(grid);
 
-    return endMinutes > 24 * 60;
+    return (bounds[bounds.length - 1] ?? 0) > 24 * 60;
 });
 </script>
 

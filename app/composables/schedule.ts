@@ -6,6 +6,8 @@
  * is no fallback shape and no assumed Mon–Fri, because TAXONOMY.md §2 forbids
  * exactly that. A tenant with no TimeGrid renders an empty state, not a guess.
  */
+import type { TimeGridBreak } from '#shared/timeGrid';
+import { blockSpan } from '#shared/timeGrid';
 
 export interface TimeGrid {
     id: string;
@@ -15,7 +17,10 @@ export interface TimeGrid {
     activeDays: number[];
     startHour: number;
     startMinute: number;
+    /** Default gap between consecutive blocks, unless a break override replaces it. */
     breakMinutes: number;
+    /** Named, sparse overrides. Absent on a grid that has none — the common case. */
+    breaks?: TimeGridBreak[];
     isDefault: boolean;
 }
 
@@ -75,16 +80,25 @@ export function weekdayShort(iso: number): string {
 
 /**
  * Clock label for a block index, derived from the grid rather than assumed.
- * Blocks are laid end to end with `breakMinutes` between them.
+ *
+ * Blocks are laid end to end with the grid's default gap between them, unless a
+ * named break override replaces it at that position — so this walks cumulative
+ * boundaries rather than multiplying by a stride. The walk is shared with
+ * `blockOfMinute()`, which asks the inverse question; see `shared/timeGrid.ts`.
+ *
+ * `dayOfWeek` matters once a grid has a day-specific override. It defaults to
+ * "no particular day", which sees only universal ones.
  */
-export function blockTime(grid: TimeGrid, blockIndex: number): { start: string; end: string } {
-    const stride = grid.blockLengthMinutes + grid.breakMinutes;
-    const startMinutes = grid.startHour * 60 + grid.startMinute + blockIndex * stride;
-    const endMinutes = startMinutes + grid.blockLengthMinutes;
+export function blockTime(
+    grid: TimeGrid,
+    blockIndex: number,
+    dayOfWeek: number | null = null,
+): { start: string; end: string } {
+    const { start, end } = blockSpan(grid, blockIndex, dayOfWeek);
 
     const fmt = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 
-    return { start: fmt(startMinutes), end: fmt(endMinutes) };
+    return { start: fmt(start), end: fmt(end) };
 }
 
 /** Whole weeks spanned by a term, so the week stepper has real bounds. */
