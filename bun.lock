@@ -6,7 +6,7 @@
       "name": "xxx-changeme",
       "dependencies": {
         "@grpc/grpc-js": "^1.14.4",
-        "@mindcollaps/calendry-proto": "^0.2.0",
+        "@mindcollaps/calendry-proto": "^0.4.0",
         "@nuxt/fonts": "^0.14.0",
         "@nuxt/icon": "^2.2.3",
         "@nuxt/image": "^2.0.0",
@@ -359,7 +359,7 @@
 
     "@mapbox/node-pre-gyp": ["@mapbox/node-pre-gyp@2.0.3", "", { "dependencies": { "consola": "^3.2.3", "detect-libc": "^2.0.0", "https-proxy-agent": "^7.0.5", "node-fetch": "^2.6.7", "nopt": "^8.0.0", "semver": "^7.5.3", "tar": "^7.4.0" }, "bin": { "node-pre-gyp": "bin/node-pre-gyp" } }, "sha512-uwPAhccfFJlsfCxMYTwOdVfOz3xqyj8xYL3zJj8f0pb30tLohnnFPhLuqp4/qoEz8sNxe4SESZedcBojRefIzg=="],
 
-    "@mindcollaps/calendry-proto": ["@mindcollaps/calendry-proto@0.2.0", "https://npm.pkg.github.com/download/@mindcollaps/calendry-proto/0.2.0/62dc9a84100c3745e1c6f4f8d985e295495d1508", { "dependencies": { "protobufjs": "^7.4.0" }, "peerDependencies": { "@grpc/grpc-js": "^1.12.0" } }, "sha512-7A0J+S6Br6ZpLEiGQbiJBpYAFfNkpkER45ZMb/WXNHd1d5F7ww/ldKADwN+MPuVt/SsaDUsi3dp/N3kKDab+Jg=="],
+    "@mindcollaps/calendry-proto": ["@mindcollaps/calendry-proto@0.4.0", "https://npm.pkg.github.com/download/@mindcollaps/calendry-proto/0.4.0/73c7410f44a21cce43e773bc921d2b27195e5c84", { "dependencies": { "protobufjs": "^7.4.0" }, "peerDependencies": { "@grpc/grpc-js": "^1.12.0" } }, "sha512-xl80JxNxtPdnz0qyf/ngifeF/Wm1HeD6rKEaDilYa0U0csIgUKbYK2camxuNFeLp9U0UX+o5TqLmF1kRpJjIkQ=="],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.1.4", "", { "dependencies": { "@tybys/wasm-util": "^0.10.1" }, "peerDependencies": { "@emnapi/core": "^1.7.1", "@emnapi/runtime": "^1.7.1" } }, "sha512-3NQNNgA1YSlJb/kMH1ildASP9HW7/7kYnRI2szWJaofaS1hWmbGI4H+d3+22aGzXXN9IJ+n+GiFVcGipJP18ow=="],
 

@@ -75,30 +75,6 @@
                     >{{ selectedType.description }}</p>
                 </div>
 
-                <!--
-                    The honest part. Ten of the thirteen types belong to a solver
-                    service that does not exist in this repo. They are storable
-                    and configurable — the tenant's policy is real data — but
-                    nothing evaluates them yet, and a UI that let you enable
-                    "cap online share at 30%" without saying so would be
-                    promising enforcement it does not do.
-                -->
-                <p
-                    v-if="selectedType?.evaluator === 'solver'"
-                    class="builder_deferred"
-                >
-                    <Icon
-                        name="material-symbols:hourglass-empty"
-                        aria-hidden="true"
-                    />
-                    <span>
-                        <strong>Enforced by the solver — not yet implemented.</strong>
-                        This rule is saved and will be handed to the solver service when it
-                        exists. Until then it produces no warnings, and manual edits are not
-                        checked against it.
-                    </span>
-                </p>
-
                 <div
                     v-if="selectedType"
                     class="builder_field"
