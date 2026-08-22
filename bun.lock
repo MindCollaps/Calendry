@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "xxx-changeme",
+      "name": "calendry",
       "dependencies": {
         "@grpc/grpc-js": "^1.14.4",
         "@mindcollaps/calendry-proto": "^0.4.0",

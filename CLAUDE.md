@@ -1358,14 +1358,28 @@ surprises. None of these block current work.
   callers to an implemented variant — the type error was a real signal that has
   been silenced, not solved.
 
-- **Pre-launch sweep for leftover template-author branding/strings.** The Step 1
-  rebrand searched only for the `xxx-changeme` placeholder pattern, so anything
-  the template author hardcoded under a different name survived it. `Swindler`
-  (the page title and header text) was one such instance, found by accident
-  while building the login UI and fixed then — there may well be others in copy,
-  comments, asset names or config. Not urgent, but sweep before this goes near
-  real users: the failure mode is another institution's product name appearing
-  in Calendry's UI.
+- ~~**Pre-launch sweep for leftover template-author branding/strings.**~~ **DONE.**
+  The Step 1 rebrand searched only for the `xxx-changeme` placeholder pattern, so
+  anything the template author hardcoded under a different name survived it;
+  `Swindler` (the page title and header text) was found by accident while
+  building the login UI and fixed then. A full case-insensitive sweep across all
+  three repos has now been done and found exactly **one** further instance:
+  `bun.lock` still recorded `"name": "xxx-changeme"` for the workspace, because
+  the rebrand changed `package.json` and `bun install` does not rewrite that
+  field (it reports "no changes" even when the two disagree). Fixed by hand and
+  re-verified with `--frozen-lockfile`.
+
+  Everything else was clean: `package.json` metadata, README, `robots.txt`, the
+  `useHead` titles, layouts, devcontainer, both compose files, `.config/`, and
+  both sibling repos. Note the stakes were lower than this entry assumed — the
+  template's author is this repo's own author, so there was never another
+  institution's product name to leak.
+
+  **Two vatsim-radar attributions in `modules/styles.ts` and
+  `app/scss/variables.scss` are deliberately KEPT.** They are provenance for
+  borrowed code (`// From https://vatsim-radar.com/ … modified to fit our
+  needs`), not branding; removing them would strip credit from third-party-derived
+  work. Do not "finish the sweep" by deleting them.
 
 - **`docker-compose-next.yml` cannot start.** It declares
   `depends_on: redis: condition: service_healthy` but defines no `redis`
