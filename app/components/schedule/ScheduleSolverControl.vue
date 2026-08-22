@@ -37,7 +37,7 @@
                         type="number"
                         min="1"
                         max="100000000"
-                        step="50000"
+                        step="500000"
                     >
                 </label>
                 <label class="solver_field">
@@ -197,6 +197,7 @@
 <script setup lang="ts">
 import CommonButton from '~/components/common/CommonButton.vue';
 import { useSolverRun } from '~/composables/solverRun';
+import { DEFAULT_MAX_MOVES, DEFAULT_MAX_WALL_MILLIS } from '~~/shared/solverBudget';
 
 const props = defineProps<{ termId: string }>();
 
@@ -207,9 +208,11 @@ const showAdvanced = ref(false);
 const confirmCancel = ref(false);
 
 // Seeded from the route's own defaults so the disclosure shows what a plain
-// click would have done, rather than blank inputs.
-const maxMoves = ref(50_000);
-const maxWallSeconds = ref(10);
+// click would have done, rather than blank inputs. Imported rather than
+// retyped: two literals that merely happened to match let the route's default
+// be raised while every run started from here kept sending the old one.
+const maxMoves = ref(DEFAULT_MAX_MOVES);
+const maxWallSeconds = ref(DEFAULT_MAX_WALL_MILLIS / 1000);
 
 /** The Generation's CURRENT status — an applied proposal must stop inviting a decision. */
 const generationStatus = ref<string | null>(null);

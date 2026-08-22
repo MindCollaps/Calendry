@@ -12,6 +12,7 @@ import {
     toWireU64,
 } from '../../../utils/solverClient';
 import { TermEndedError, assembleSolverInput } from '../../../utils/solverInput';
+import { DEFAULT_MAX_MOVES, DEFAULT_MAX_WALL_MILLIS } from '../../../../shared/solverBudget';
 
 /**
  * Sentinel for "the one-active-run index rejected this insert".
@@ -54,8 +55,8 @@ export default defineEventHandler(async (event) => {
     const body = await readValidatedBody(event, bodySchema.parse);
 
     const seed = BigInt(body.seed ?? 42);
-    const maxMoves = body.maxMoves ?? 50_000;
-    const maxWallMillis = body.maxWallMillis ?? 10_000;
+    const maxMoves = body.maxMoves ?? DEFAULT_MAX_MOVES;
+    const maxWallMillis = body.maxWallMillis ?? DEFAULT_MAX_WALL_MILLIS;
 
     /**
      * Written BEFORE StartRun, so the partial unique index rejects a concurrent
