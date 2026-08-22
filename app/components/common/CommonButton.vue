@@ -78,10 +78,11 @@ const props = defineProps({
         default: '16px',
     },
     type: {
-        // NOTE: 'transparent' and 'secondary-875' are accepted because existing
-        // callers pass them, but this component has no styles for either — they
-        // render with an unstyled button--type-* class. Either add the SCSS or
-        // migrate those callers to a implemented variant.
+        // NOTE: 'secondary-875' is accepted because ViewMenu.vue passes it, but
+        // this component has no styles for it — it renders with an unstyled
+        // button--type-secondary-875 class. Either add the SCSS or migrate that
+        // caller to an implemented variant. ('transparent' was the other half
+        // of this gap and now has styles.)
         type: String as PropType<'primary' | 'secondary' | 'secondary-black' | 'secondary-875' | 'destructive' | 'link' | 'transparent'>,
         default: 'primary',
     },
@@ -275,6 +276,60 @@ const getAttrs = computed(() => {
             &:active, &:focus {
                 background: var(--focus-color, $content7);
             }
+        }
+    }
+
+    /**
+     * Chrome, not a surface. `transparent` is for controls that sit ON other
+     * content — a chevron over a carousel, an affordance in a header — where a
+     * filled rest state would read as a panel of its own.
+     *
+     * WHY IT CANNOT JUST REUSE `secondary`. That variant is
+     * `var(--primary-color, transparent)`, so it is only transparent until a
+     * caller sets --primary-color, and its :active/:focus jumps to a solid
+     * $primary500. Both are wrong here: a chevron that flashes solid purple
+     * when clicked reads as a primary action rather than a nudge. The wash
+     * steps $whiteAlpha4 -> $whiteAlpha8 instead, and the rest state is
+     * unconditional.
+     *
+     * Unlike `link` it keeps padding, radius and the 40px icon box, so it stays
+     * a real hit target rather than collapsing to the glyph's own bounds.
+     */
+    &--type-transparent {
+        background: transparent;
+
+        /* The base declares backgrounds for rest AND hover/focus/active inside
+           `@include pc`, so overriding only the unmediated declaration above
+           would leave this variant solid purple on wide viewports — a bug that
+           survives review because nobody resizes to 1366px to check a chevron.
+           Every state is therefore restated, not just the rest one. */
+        @include pc {
+            &, &:hover, &:focus, &:active {
+                background: transparent;
+            }
+        }
+
+        /* MUST STAY AFTER THE RESET ABOVE. On a wide pointer device both blocks
+           match and both are (0,2,0), so source order alone decides which wins.
+           Moving this above the `@include pc` block does not fail loudly — it
+           silently removes the hover feedback at >=1366px only. */
+        @include hover {
+            &:hover {
+                background: var(--hover-color, $whiteAlpha4);
+            }
+
+            &:active, &:focus {
+                background: var(--focus-color, $whiteAlpha8);
+            }
+        }
+
+        /* `.button` clears the outline globally. On a filled variant the
+           background change carries focus on its own; with no fill at rest
+           there is nothing left to see, so keyboard focus would be invisible.
+           Matches the ring used across the schedule components. */
+        &:focus-visible {
+            outline: 2px solid $primary400;
+            outline-offset: -2px;
         }
     }
 
